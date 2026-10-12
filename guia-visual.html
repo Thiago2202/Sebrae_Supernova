@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<!--
+  MOVIMENTO LEVE · GUIA VISUAL
+  Página de referência: paleta, fontes, componentes e tom de voz usados no
+  jogo (index.html) e no painel do profissional (admin.html).
+  É só para consulta — nada aqui é carregado pelos outros dois arquivos.
+  Se mudar uma cor ou fonte no jogo ou no painel, atualize aqui também.
+-->
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Guia visual · Movimento Leve</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Nunito:wght@700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      /* As mesmas variáveis do index.html */
+      --creme: #FFF8F0; --menta: #A8D5BA; --ceu: #9CC7E8; --coral: #F4A6A0; --texto: #3B3B3B;
+      --menta-forte: #2E7D57; --ceu-forte: #2A6A9E; --coral-forte: #B8463D;
+      --menta-clara: #E4F3EA; --ceu-claro: #E6F1FA; --coral-claro: #FDEBE8;
+      --texto-suave: #5A554F;
+      --raio: 24px;
+      --sombra: 0 4px 16px rgba(59, 59, 59, .10);
+      --fonte-titulo: "Nunito", "Quicksand", system-ui, sans-serif;
+      --fonte: "Inter", system-ui, "Segoe UI", Roboto, Arial, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--creme); color: var(--texto); font: 17px/1.55 var(--fonte); }
+    main { width: min(1040px, 100%); margin: 0 auto; padding: 32px 20px 64px; display: flex; flex-direction: column; gap: 40px; }
+    h1, h2, h3 { font-family: var(--fonte-titulo); font-weight: 800; margin: 0; line-height: 1.2; }
+    h1 { font-size: 38px; }
+    h2 { font-size: 26px; margin-bottom: 14px; }
+    h3 { font-size: 18px; margin: 18px 0 10px; }
+    p { margin: 0 0 10px; }
+    code { font: 14px ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; background: #F1EADF; padding: 1px 6px; border-radius: 6px; }
+    .topo { display: flex; align-items: center; gap: 16px; }
+    .topo svg { width: 64px; height: 64px; flex: none; }
+    .sub { color: var(--texto-suave); }
+    section { background: #FFFFFF; border-radius: var(--raio); box-shadow: var(--sombra); padding: 26px 28px; }
+    ul { margin: 0; padding-left: 22px; }
+    li { margin-bottom: 6px; }
+
+    /* Amostras de cor */
+    .cores { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
+    .cor { border-radius: 16px; overflow: hidden; border: 1px solid #E6DED2; background: #FFFFFF; }
+    .cor .amostra { height: 76px; display: grid; place-items: center; font: 800 18px var(--fonte-titulo); }
+    .cor .dados { padding: 10px 12px; font-size: 14px; line-height: 1.4; }
+    .cor .dados strong { display: block; font: 800 15px var(--fonte-titulo); }
+    .cor .dados span { color: var(--texto-suave); }
+
+    /* Tipografia */
+    .tipos { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+    .tipo { padding: 18px 20px; border-radius: 16px; background: var(--creme); }
+    .tipo .grande { font: 800 40px/1.1 var(--fonte-titulo); }
+    .tipo .corpo { font: 400 24px/1.35 var(--fonte); }
+
+    /* Componentes (cópias fiéis dos do jogo, em tamanho menor) */
+    .vitrine { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; padding: 20px; border-radius: 16px; background: var(--creme); }
+    .botao {
+      display: inline-flex; align-items: center; justify-content: center; gap: 12px;
+      min-height: 64px; padding: 10px 30px;
+      border: 3px solid var(--menta-forte); border-radius: var(--raio);
+      background: var(--menta); color: var(--texto);
+      font: 800 24px/1.1 var(--fonte-titulo); box-shadow: var(--sombra);
+    }
+    .botao.secundario { background: #FFFFFF; border-color: var(--ceu-forte); }
+    .botao.desligado { background: #E7E2DA; border-color: #BDB6AC; color: #5F5A54; box-shadow: none; }
+    .botao svg { width: 1.2em; height: 1.2em; }
+    .opcao {
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+      width: 190px; padding: 16px 12px;
+      border: 3px solid; border-radius: var(--raio); box-shadow: var(--sombra);
+      font: 800 21px/1.15 var(--fonte-titulo); text-align: center;
+    }
+    .opcao svg { width: 60px; height: 60px; }
+    .opcao.bem { background: var(--menta-clara); border-color: var(--menta-forte); }
+    .opcao.dor { background: var(--ceu-claro); border-color: var(--ceu-forte); }
+    .opcao.dificuldade { background: var(--coral-claro); border-color: var(--coral-forte); }
+    .recado { display: flex; align-items: center; gap: 14px; padding: 12px 22px; border-radius: var(--raio); border: 3px solid var(--coral); background: #FFFFFF; box-shadow: var(--sombra); }
+    .recado svg { width: 40px; height: 40px; flex: none; }
+    .recado .de { color: var(--texto-suave); font-size: 18px; margin: 0; }
+    .recado .fala { font: 800 22px/1.25 var(--fonte-titulo); margin: 0; }
+    .vitoria { display: inline-flex; align-items: center; gap: 10px; padding: 8px 22px; border-radius: 999px; border: 2px solid var(--menta); background: var(--menta-clara); font: 800 21px var(--fonte-titulo); }
+    .vitoria svg { width: 28px; height: 28px; }
+
+    /* Componentes do painel */
+    .vitrine.painel { background: #F6F4F0; font: 15px/1.5 var(--fonte); color: #2B2F36; }
+    .selo { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 600; }
+    .selo svg { width: 15px; height: 15px; }
+    .selo.ok { background: #E4F3EA; color: #1F5E3F; }
+    .selo.alerta { background: #FFF1D6; color: #7A4D00; }
+    .selo.cuidado { background: #FDEBE8; color: #8F2F27; }
+    .selo.neutro { background: #EFECE7; color: #50565F; }
+    .botao-painel { display: inline-flex; align-items: center; min-height: 44px; padding: 0 18px; border-radius: 10px; border: 1px solid #1D4F91; background: #1D4F91; color: #FFFFFF; font: 600 15px var(--fonte); }
+    .botao-painel.contorno { background: #FFFFFF; color: #1D4F91; border-color: #CFC8BD; }
+    .cartao-painel { padding: 14px 18px; border-radius: 16px; background: #FFFFFF; border: 1px solid #E6E1D9; box-shadow: 0 1px 2px rgba(31,58,95,.05), 0 6px 18px rgba(31,58,95,.07); }
+    .cartao-painel .rotulo { font-size: 13px; font-weight: 600; color: #50565F; }
+    .cartao-painel .valor { font: 800 28px/1.15 var(--fonte-titulo); }
+
+    /* Tabelas */
+    table { width: 100%; border-collapse: collapse; font-size: 16px; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #EEE6DA; vertical-align: top; }
+    th { font: 800 15px var(--fonte-titulo); color: var(--texto-suave); }
+    td.antes { color: var(--texto-suave); }
+    td.depois { font-weight: 600; }
+  </style>
+</head>
+<body>
+<main>
+
+  <header class="topo">
+    <svg viewBox="0 0 48 48" aria-hidden="true">
+      <circle cx="24" cy="24" r="24" fill="#A8D5BA"/>
+      <path d="M24 37 C 11 27.5, 10.5 17, 17 14.5 C 20.6 13.1, 23.3 15.2, 24 17.6 C 24.7 15.2, 27.4 13.1, 31 14.5 C 37.5 17, 37 27.5, 24 37 Z" fill="#F4A6A0" stroke="#B8463D" stroke-width="1.8" stroke-linejoin="round"/>
+      <path d="M35.5 9.5 q4.2 2.6 5 7.4 M39.6 5.6 q6 3.8 7 10.6" fill="none" stroke="#2E7D57" stroke-width="2.4" stroke-linecap="round"/>
+    </svg>
+    <div>
+      <h1>Movimento Leve · Guia visual</h1>
+      <p class="sub">Paleta, fontes, componentes e tom de voz do jogo e do painel do profissional.</p>
+    </div>
+  </header>
+
+  <section>
+    <h2>A ideia em três frases</h2>
+    <ul>
+      <li><strong>Acolher antes de medir.</strong> O produto celebra a presença ("você cuidou de você hoje"), não o desempenho.</li>
+      <li><strong>Suave, mas legível.</strong> As cores pastel são fundo e contorno; o texto é sempre o cinza-escuro quente, que passa no contraste AA/AAA.</li>
+      <li><strong>O significado nunca está só na cor.</strong> Todo botão e todo selo tem ícone e texto.</li>
+    </ul>
+    <h3>O logo</h3>
+    <p>Um coração (cuidado) com dois traços de movimento, dentro de um círculo verde-menta. Aparece no canto das telas do jogo, no login e no cabeçalho do painel.</p>
+  </section>
+
+  <section>
+    <h2>Paleta do jogo</h2>
+    <p>Fica no bloco <code>:root</code>, no começo do <code>&lt;style&gt;</code> do <code>index.html</code>. Os números são o contraste do texto cinza-escuro (<code>#3B3B3B</code>) sobre cada cor.</p>
+    <h3>Cores principais</h3>
+    <div class="cores">
+      <div class="cor"><div class="amostra" style="background:#FFF8F0">Aa</div><div class="dados"><strong>Creme · #FFF8F0</strong><span>Fundo de todas as telas · 10,6:1</span></div></div>
+      <div class="cor"><div class="amostra" style="background:#A8D5BA">Aa</div><div class="dados"><strong>Verde-menta · #A8D5BA</strong><span>Botão principal, "estou bem" · 6,9:1</span></div></div>
+      <div class="cor"><div class="amostra" style="background:#9CC7E8">Aa</div><div class="dados"><strong>Azul-céu · #9CC7E8</strong><span>Números dos passos, cursor · 6,3:1</span></div></div>
+      <div class="cor"><div class="amostra" style="background:#F4A6A0">Aa</div><div class="dados"><strong>Coral suave · #F4A6A0</strong><span>Recado, coração, carinho · 5,8:1</span></div></div>
+      <div class="cor"><div class="amostra" style="background:#3B3B3B;color:#fff">Aa</div><div class="dados"><strong>Texto · #3B3B3B</strong><span>Todo o texto e o traço do boneco</span></div></div>
+    </div>
+    <h3>Tons fortes (contornos, ícones e números)</h3>
+    <div class="cores">
+      <div class="cor"><div class="amostra" style="background:#2E7D57;color:#fff">Aa</div><div class="dados"><strong>Menta forte · #2E7D57</strong><span>Contorno do botão principal, anel de progresso · 4,8:1 no creme</span></div></div>
+      <div class="cor"><div class="amostra" style="background:#2A6A9E;color:#fff">Aa</div><div class="dados"><strong>Céu forte · #2A6A9E</strong><span>Contornos, foco do teclado, pontos · 5,5:1 no creme</span></div></div>
+      <div class="cor"><div class="amostra" style="background:#B8463D;color:#fff">Aa</div><div class="dados"><strong>Coral forte · #B8463D</strong><span>Avisos e erros (com texto) · 5,0:1 no creme</span></div></div>
+    </div>
+    <h3>Tons claros (fundo de cartões)</h3>
+    <div class="cores">
+      <div class="cor"><div class="amostra" style="background:#E4F3EA">Aa</div><div class="dados"><strong>Menta clara · #E4F3EA</strong><span>"Estou bem", pequenas vitórias</span></div></div>
+      <div class="cor"><div class="amostra" style="background:#E6F1FA">Aa</div><div class="dados"><strong>Céu claro · #E6F1FA</strong><span>"Um pouco de dor", dicas</span></div></div>
+      <div class="cor"><div class="amostra" style="background:#FDEBE8">Aa</div><div class="dados"><strong>Coral claro · #FDEBE8</strong><span>"Com dificuldade", "não estou vendo você"</span></div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Paleta do painel do profissional</h2>
+    <p>Mais sóbria, mas da mesma família: cinzas quentes, azul-escuro e os mesmos verde, âmbar e coral nos selos. Fica no <code>:root</code> do <code>admin.html</code>.</p>
+    <div class="cores">
+      <div class="cor"><div class="amostra" style="background:#1F3A5F;color:#fff">Aa</div><div class="dados"><strong>Azul-escuro · #1F3A5F</strong><span>Cabeçalho · texto branco 11:1</span></div></div>
+      <div class="cor"><div class="amostra" style="background:#1D4F91;color:#fff">Aa</div><div class="dados"><strong>Azul · #1D4F91</strong><span>Botões e links · texto branco 8:1</span></div></div>
+      <div class="cor"><div class="amostra" style="background:#F6F4F0;color:#2B2F36">Aa</div><div class="dados"><strong>Cinza quente · #F6F4F0</strong><span>Fundo da página</span></div></div>
+      <div class="cor"><div class="amostra" style="background:#E4F3EA;color:#1F5E3F">Aa</div><div class="dados"><strong>Verde · #E4F3EA / #1F5E3F</strong><span>Positivo: "Ativo", "Bem", ao vivo</span></div></div>
+      <div class="cor"><div class="amostra" style="background:#FFF1D6;color:#7A4D00">Aa</div><div class="dados"><strong>Âmbar · #FFF1D6 / #7A4D00</strong><span>Atenção: "Um pouco de dor", sem atividade</span></div></div>
+      <div class="cor"><div class="amostra" style="background:#FDEBE8;color:#8F2F27">Aa</div><div class="dados"><strong>Coral · #FDEBE8 / #8F2F27</strong><span>Cuidado: "Com dificuldade"</span></div></div>
+      <div class="cor"><div class="amostra" style="background:#2a78d6;color:#fff">Aa</div><div class="dados"><strong>Azul do gráfico · #2A78D6</strong><span>Barras e linha (uma série só)</span></div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Fontes</h2>
+    <div class="tipos">
+      <div class="tipo">
+        <div class="grande">Nunito 800</div>
+        <p>Arredondada e amigável. Títulos, botões, números e nomes — no jogo e no painel.</p>
+        <p class="sub">Jogo: títulos de 38 a 60 px; botões de 26 a 34 px.<br>Painel: títulos de 15 a 30 px.</p>
+      </div>
+      <div class="tipo">
+        <div class="corpo">Inter 400 e 600</div>
+        <p>Limpa e muito legível. Textos de apoio, instruções e tabelas.</p>
+        <p class="sub">Jogo: nunca menor que 24 px.<br>Painel: 15 px no texto, 13 px nos rótulos.</p>
+      </div>
+    </div>
+    <p style="margin-top:14px">As duas vêm do Google Fonts. Para trocar, mude o <code>&lt;link&gt;</code> das fontes e as variáveis <code>--fonte-titulo</code> e <code>--fonte</code>.</p>
+  </section>
+
+  <section>
+    <h2>Componentes do jogo</h2>
+    <h3>Botões — sempre ícone + texto, com pelo menos 80 px de altura no jogo</h3>
+    <div class="vitrine">
+      <span class="botao"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg>Principal</span>
+      <span class="botao secundario"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor" stroke-width="1.6"/><path d="M15.5 9a4.2 4.2 0 0 1 0 6M18.2 6.3a8 8 0 0 1 0 11.4"/></svg>Secundário</span>
+      <span class="botao desligado">Desligado</span>
+    </div>
+    <p class="sub" style="margin-top:8px">Principal: menta com contorno menta forte. Secundário: branco com contorno céu forte. Cantos de 24 px e sombra suave.</p>
+
+    <h3>Bem-estar — "Como você está se sentindo hoje?"</h3>
+    <div class="vitrine">
+      <span class="opcao bem"><svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="28" fill="#FFE3B0" stroke="#3B3B3B" stroke-width="4"/><circle cx="23" cy="29" r="3.5" fill="#3B3B3B"/><circle cx="41" cy="29" r="3.5" fill="#3B3B3B"/><path d="M20 38 Q32 50 44 38" fill="none" stroke="#3B3B3B" stroke-width="4" stroke-linecap="round"/></svg>Estou bem</span>
+      <span class="opcao dor"><svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="28" fill="#FFE3B0" stroke="#3B3B3B" stroke-width="4"/><circle cx="23" cy="29" r="3.5" fill="#3B3B3B"/><circle cx="41" cy="29" r="3.5" fill="#3B3B3B"/><path d="M21 42 H43" fill="none" stroke="#3B3B3B" stroke-width="4" stroke-linecap="round"/></svg>Um pouco de dor</span>
+      <span class="opcao dificuldade"><svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="28" fill="#FFE3B0" stroke="#3B3B3B" stroke-width="4"/><circle cx="23" cy="29" r="3.5" fill="#3B3B3B"/><circle cx="41" cy="29" r="3.5" fill="#3B3B3B"/><g fill="none" stroke="#3B3B3B" stroke-width="4" stroke-linecap="round"><path d="M20 46 Q32 36 44 46"/><path d="M16 23 L26 19 M48 23 L38 19"/></g></svg>Com dificuldade</span>
+    </div>
+    <p class="sub" style="margin-top:8px">Os rostos são desenhados em SVG (não são emoji), para aparecerem iguais em qualquer computador.</p>
+
+    <h3>Recado do profissional e pequena vitória</h3>
+    <div class="vitrine">
+      <div class="recado">
+        <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M24 40 C 8 28, 7 14, 15.5 11 C 20 9.4, 23.2 12, 24 15 C 24.8 12, 28 9.4, 32.5 11 C 41 14, 40 28, 24 40 Z" fill="#F4A6A0" stroke="#B8463D" stroke-width="2.4" stroke-linejoin="round"/></svg>
+        <div><p class="de">Dra. Ana deixou um recado para você:</p><p class="fala">“Continue assim, Dona Ivone!”</p></div>
+      </div>
+      <span class="vitoria"><svg viewBox="0 0 100 100" aria-hidden="true"><polygon points="50,6 62,38 96,38 68,58 79,92 50,72 21,92 32,58 4,38 38,38" fill="#F6C453" stroke="#8A5A00" stroke-width="5" stroke-linejoin="round"/></svg>Você já fez 5 sessões esta semana!</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Componentes do painel</h2>
+    <div class="vitrine painel">
+      <div class="cartao-painel"><div class="rotulo">Sessões realizadas</div><div class="valor">27</div></div>
+      <span class="botao-painel">Salvar recado</span>
+      <span class="botao-painel contorno">Ver histórico</span>
+      <span class="selo ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Ativo · hoje</span>
+      <span class="selo alerta"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5l6 10.5H2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M8 7v2.5M8 11.3v.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>Sem atividade há 12 dias</span>
+      <span class="selo ok">Bem</span>
+      <span class="selo alerta">Um pouco de dor</span>
+      <span class="selo cuidado">Com dificuldade</span>
+      <span class="selo neutro">Visitante · não entra no histórico</span>
+    </div>
+    <p class="sub" style="margin-top:8px">Cartões brancos com cantos de 16 px e sombra bem leve. Verde = positivo, âmbar = atenção, coral = cuidado; sempre com texto ao lado.</p>
+  </section>
+
+  <section>
+    <h2>Tom de voz — antes e depois</h2>
+    <p>Regra: frases curtas, calorosas, sem cobrança e sem palavras de consultório. No painel, os avisos são "sinais" e "indicativos", nunca conclusões.</p>
+    <table>
+      <thead><tr><th>Onde</th><th>Antes</th><th>Depois</th></tr></thead>
+      <tbody>
+        <tr><td>Primeira tela</td><td class="antes">Quem vai jogar?</td><td class="depois">Olá! Quem vai se movimentar hoje?</td></tr>
+        <tr><td>Depois de dizer o nome</td><td class="antes">Jogando: Yasmin B</td><td class="depois">Bom dia, Yasmin B! Que bom ver você por aqui.</td></tr>
+        <tr><td>Título das instruções</td><td class="antes">Segure o bonequinho!</td><td class="depois">Vamos nos movimentar?</td></tr>
+        <tr><td>Quem disse estar com dor</td><td class="antes">(nada)</td><td class="depois">Obrigado por contar. Vá no seu ritmo e pare quando quiser.</td></tr>
+        <tr><td>A cada captura</td><td class="antes">Sempre "Muito bem! Você conseguiu!"</td><td class="depois">Reveza com "Isso mesmo! Que beleza!" e "Você está indo muito bem!"</td></tr>
+        <tr><td>Botão durante o jogo</td><td class="antes">Encerrar sessão</td><td class="depois">Terminar</td></tr>
+        <tr><td>Ao terminar</td><td class="antes">(voltava direto para as instruções)</td><td class="depois">Muito bem! Você cuidou de você hoje.</td></tr>
+        <tr><td>Ao terminar sem capturas</td><td class="antes">0 capturas</td><td class="depois">Vamos tentar mais uma vez juntos?</td></tr>
+        <tr><td>Pé da primeira tela</td><td class="antes">(nada)</td><td class="depois">Seus dados são seus. Só o profissional que te acompanha vê.</td></tr>
+        <tr><td>Quando o nível sobe</td><td class="antes">(dificuldade fixa)</td><td class="depois">Você está indo muito bem! O bonequinho vai andar um pouquinho mais rápido.</td></tr>
+        <tr><td>Painel: números</td><td class="antes">Capturas: 67</td><td class="depois">Segurou o boneco por 3 s em 67 ocasiões — bom indicativo de coordenação e atenção sustentada.</td></tr>
+        <tr><td>Painel: ausência</td><td class="antes">Sem atividade há 12 dias</td><td class="depois">Durval J não se movimenta há 12 dias. Um recado de incentivo pode ajudar.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Onde ajustar cada coisa</h2>
+    <table>
+      <thead><tr><th>O quê</th><th>Arquivo</th><th>Onde</th></tr></thead>
+      <tbody>
+        <tr><td>Cores e fontes do jogo</td><td><code>index.html</code></td><td>bloco <code>:root</code> no começo do <code>&lt;style&gt;</code></td></tr>
+        <tr><td>Frases do jogo</td><td><code>index.html</code></td><td>constantes <code>TEXTS</code> e <code>CAPTURE_MESSAGES</code></td></tr>
+        <tr><td>Instruções por escrito ("Como funciona")</td><td><code>index.html</code></td><td>constante <code>INSTRUCOES_ESCRITAS</code></td></tr>
+        <tr><td>Dificuldade adaptativa (níveis)</td><td><code>index.html</code></td><td>bloco "AJUSTE DE DIFICULDADE": <code>NIVEL_*</code>, <code>RITMO_SUBIDA_*</code>, <code>LIMIAR_*</code>, <code>LIMITE_SEGURO_*</code></td></tr>
+        <tr><td>Frases de subida de nível</td><td><code>index.html</code></td><td>constante <code>MENSAGENS_DE_NIVEL</code></td></tr>
+        <tr><td>Respostas de bem-estar</td><td>os dois</td><td>constante <code>WELLBEING_OPTIONS</code> (mesmos <code>id</code> nos dois)</td></tr>
+        <tr><td>Nome do produto</td><td>os dois</td><td>constante <code>PRODUCT_NAME</code></td></tr>
+        <tr><td>Velocidade da voz</td><td><code>index.html</code></td><td>constante <code>SPEECH_RATE</code></td></tr>
+        <tr><td>Cores e fontes do painel</td><td><code>admin.html</code></td><td>bloco <code>:root</code></td></tr>
+        <tr><td>Quem assina os recados</td><td><code>admin.html</code></td><td>constante <code>PROFESSIONAL_NAME</code></td></tr>
+        <tr><td>Quando o painel avisa</td><td><code>admin.html</code></td><td><code>ALERT_LAST_SESSIONS</code>, <code>ALERT_MIN_REPORTS</code>, <code>INACTIVITY_ALERT_DAYS</code></td></tr>
+        <tr><td>Frases das leituras</td><td><code>admin.html</code></td><td>função <code>gerarLeituras()</code></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+</main>
+</body>
+</html>

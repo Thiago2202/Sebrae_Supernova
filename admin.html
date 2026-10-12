@@ -1,0 +1,2088 @@
+<!DOCTYPE html>
+<!--
+  ============================================================================
+  MOVIMENTO LEVE · PAINEL DO PROFISSIONAL  (admin.html)
+  ----------------------------------------------------------------------------
+  Painel para o profissional de saúde (fisioterapeuta, terapeuta ocupacional,
+  cuidador) acompanhar o desempenho de cada paciente na atividade
+  "Segure o bonequinho" (index.html, nesta mesma pasta).
+
+  COMO ABRIR:
+    1. Sirva esta pasta por localhost:   python3 -m http.server 8000
+    2. Acesse:                           http://localhost:8000/admin.html
+    3. Entre com o usuário e a senha definidos logo abaixo (ADMIN_USER e
+       ADMIN_PASSWORD).
+
+  DE ONDE VÊM OS DADOS:
+    Não há servidor. O jogo (index.html) grava cada sessão no localStorage do
+    navegador, e este painel lê de lá. Por isso as duas páginas precisam ser
+    abertas no MESMO navegador e no MESMO endereço (mesma origem).
+    Na primeira vez, o painel cria dados de EXEMPLO para os quatro pacientes.
+
+  SESSÃO AO VIVO:
+    Enquanto alguém joga no index.html (em outra aba ou janela deste mesmo
+    navegador), o cartão do topo mostra o nome, o tempo e as capturas, sem
+    recarregar a página. Veja o bloco "SESSÃO AO VIVO" no JavaScript.
+
+  CAMADA ACOLHEDORA (o que ajustar e onde):
+    • CORES e FONTES ............ bloco ":root", no começo do <style>
+    • NOME DO PRODUTO ........... constante PRODUCT_NAME
+    • QUEM ASSINA OS RECADOS .... constante PROFESSIONAL_NAME
+    • RESPOSTAS DE BEM-ESTAR .... constante WELLBEING_OPTIONS
+    • QUANDO AVISAR ............. ALERT_LAST_SESSIONS, ALERT_MIN_REPORTS e
+                                  INACTIVITY_ALERT_DAYS
+    • FRASES DAS LEITURAS ....... função gerarLeituras()
+
+  ONDE PLUGAR UM BACKEND REAL: procure por "BACKEND FUTURO" neste arquivo.
+  ============================================================================
+-->
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Painel do Profissional · Movimento Leve</title><!-- muda quando há alguém ao vivo -->
+
+  <script>
+  /* ==========================================================================
+     ★ CONSTANTES — ajuste aqui, sem mexer no resto
+     ========================================================================== */
+
+  /* --------------------------------------------------------------------------
+     IDENTIDADE E CUIDADO
+     -------------------------------------------------------------------------- */
+  // Nome do produto. PRECISA ser igual ao do index.html.
+  const PRODUCT_NAME = 'Movimento Leve';
+  // Quem assina os recados deixados para os pacientes
+  // (aparece para o paciente como "Dra. Ana deixou um recado para você:").
+  const PROFESSIONAL_NAME = 'Dra. Ana';
+  // Tamanho máximo de um recado (curto de propósito: é lido em letras grandes).
+  const MESSAGE_MAX_LENGTH = 160;
+
+  // BEM-ESTAR — as respostas de "Como você está se sentindo hoje?".
+  // Os "id" PRECISAM ser os mesmos do index.html. "atencao: true" marca as
+  // respostas que entram na conta dos avisos.
+  const WELLBEING_OPTIONS = [
+    { id: 'bem',         rotulo: 'Bem',             atencao: false },
+    { id: 'dor',         rotulo: 'Um pouco de dor', atencao: true },
+    { id: 'dificuldade', rotulo: 'Com dificuldade', atencao: true },
+  ];
+
+  // AVISOS SUTIS — olha as últimas ALERT_LAST_SESSIONS sessões com resposta
+  // de bem-estar e avisa se pelo menos ALERT_MIN_REPORTS foram de dor ou
+  // dificuldade. (Ex.: "relatou dor em 3 das últimas 4 sessões".)
+  const ALERT_LAST_SESSIONS = 4;
+  const ALERT_MIN_REPORTS = 2;
+
+  // Quantas semanas aparecem no gráfico "por semana".
+  const CHART_WEEKS = 8;
+  // Segundos que a pessoa precisa segurar o boneco (igual ao HOLD_DURATION_MS
+  // do jogo). Usado só nas frases de leitura.
+  const HOLD_SECONDS = 3;
+
+  /* --------------------------------------------------------------------------
+     LOGIN DO ADMINISTRADOR
+     ⚠ ATENÇÃO: SOLUÇÃO TEMPORÁRIA DE PROTÓTIPO. ISTO NÃO É SEGURANÇA DE VERDADE.
+     Qualquer pessoa que abrir o código-fonte da página lê o usuário e a senha,
+     e os dados ficam no localStorage, visíveis para quem usa este navegador.
+     Serve só para separar a tela do profissional da tela do paciente.
+     Com um backend real, APAGUE estas duas constantes e troque a função
+     verificarLogin() por autenticação de verdade (veja "BACKEND FUTURO").
+     -------------------------------------------------------------------------- */
+  const ADMIN_USER = 'ADM';
+  const ADMIN_PASSWORD = '1234';
+
+  // Chave do sessionStorage que guarda "está logado" (some ao fechar a aba).
+  const SESSION_KEY_AUTH = 'movimentese.admin.logado';
+
+  // Chaves do localStorage. PRECISAM ser iguais às do index.html.
+  const STORAGE_KEY_PATIENTS = 'movimentese.pacientes';
+  const STORAGE_KEY_SESSIONS = 'movimentese.sessoes';
+  // Marca que os dados de exemplo já foram criados uma vez neste navegador.
+  const STORAGE_KEY_SEED = 'movimentese.exemploCarregado';
+  // Recados do profissional para cada paciente (o jogo lê daqui).
+  const STORAGE_KEY_MESSAGES = 'movimentese.recados';
+  // Versão dos dados de exemplo. Mudar este número recria o exemplo uma vez.
+  const EXAMPLE_VERSION = '3';
+  // (O prefixo antigo "movimentese." foi mantido de propósito: trocar o nome
+  //  das chaves apagaria os dados já guardados.)
+
+  // Pacientes cadastrados. PRECISA ser igual à lista do index.html.
+  // Para cadastrar mais um, acrescente o nome aqui E no index.html.
+  const REGISTERED_PATIENTS = ['Thaís G', 'Durval J', 'P Ivone', 'Thiago A'];
+
+  // "  Thaís   g " → "thais g": sem acentos, sem maiúsculas, sem espaços sobrando.
+  function normalizarNome(nome) {
+    return String(nome).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase().trim().replace(/\s+/g, ' ');
+  }
+  // "Thaís G" → "thais-g". É por esse "id" que as sessões são guardadas.
+  function criarIdDoNome(nome) {
+    return normalizarNome(nome).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  }
+  // (Gerado sozinho a partir da lista acima.)
+  const DEFAULT_PATIENTS = REGISTERED_PATIENTS.map((nome) => ({ id: criarIdDoNome(nome), nome }));
+
+  /* --------------------------------------------------------------------------
+     SESSÃO AO VIVO — estas constantes PRECISAM ser iguais às do index.html.
+     -------------------------------------------------------------------------- */
+  // Chave do localStorage onde o jogo guarda a sessão que está acontecendo agora.
+  const ACTIVE_SESSION_KEY = 'activeSession';
+  // O jogo dá um "batimento" a cada tanto tempo (ms). O painel usa o mesmo
+  // intervalo para reler o localStorage.
+  const HEARTBEAT_INTERVAL_MS = 2000;
+  // Sem batimento por este tempo, a sessão é considerada encerrada (ms).
+  const SESSION_TIMEOUT_MS = 10000;
+  // Nome do canal de avisos entre abas (BroadcastChannel).
+  const LIVE_CHANNEL_NAME = 'movimentese-ao-vivo';
+  // Título da aba do navegador quando não há ninguém ao vivo.
+  const PAGE_TITLE = `Painel do Profissional · ${PRODUCT_NAME}`;
+
+  // Depois de quantos dias sem jogar o paciente aparece como "sem atividade".
+  const INACTIVITY_ALERT_DAYS = 7;
+  // Quantas sessões aparecem no gráfico e na lista do detalhe do paciente.
+  const CHART_MAX_SESSIONS = 12;
+  // Endereço do jogo (link "Abrir atividade").
+  const ACTIVITY_URL = 'index.html';
+  // Cor das barras do gráfico (azul; contraste ≥ 3:1 sobre o cartão branco).
+  const CHART_COLOR = '#2a78d6';
+  const CHART_COLOR_HOVER = '#5a97e0';
+  </script>
+
+  <!-- Fontes: Nunito (arredondada) nos títulos e números, Inter no texto —
+       as mesmas do jogo, para os dois parecerem a mesma casa. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Nunito:wght@700;800&display=swap" rel="stylesheet">
+
+  <!-- Chart.js (gráfico do histórico). Se não carregar, o painel segue
+       funcionando: a lista de sessões mostra os mesmos números. -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"></script>
+
+  <style>
+    /* ======================================================================
+       1. CORES E MEDIDAS
+       Tom sóbrio (azul-escuro, branco, verde de destaque), mas com a mesma
+       suavidade do jogo: cinzas quentes, cantos redondos e as mesmas fontes.
+       ====================================================================== */
+    :root {
+      --plano: #F6F4F0;            /* fundo: cinza quente, parente do creme do jogo */
+      --cartao: #FFFFFF;
+      --borda: #E6E1D9;
+      --borda-forte: #CFC8BD;
+      --texto: #2B2F36;            /* contraste 13:1 no branco */
+      --texto-2: #50565F;          /* contraste 7:1 */
+      --texto-3: #676D76;          /* contraste 5:1 (rótulos pequenos) */
+      --marinho: #1F3A5F;          /* cabeçalho — texto branco 11:1 */
+      --azul: #1D4F91;             /* botões e links — texto branco 8:1 */
+      --azul-escuro: #163E73;
+      --azul-claro: #EAF1FA;
+      --foco: #1F6FEB;
+      --ok-fundo: #E4F3EA;         /* verde-menta claro: positivo */
+      --ok-texto: #1F5E3F;
+      --alerta-fundo: #FFF1D6;     /* âmbar suave: atenção */
+      --alerta-texto: #7A4D00;
+      --cuidado-fundo: #FDEBE8;    /* coral claro: pede cuidado */
+      --cuidado-texto: #8F2F27;
+      --erro-fundo: #FDECEC;
+      --erro-texto: #9B1C1C;
+      --grade: #ECE8E1;            /* linhas do gráfico */
+      --raio: 16px;
+      --sombra: 0 1px 2px rgba(31, 58, 95, .05), 0 6px 18px rgba(31, 58, 95, .07);
+      --fonte-titulo: "Nunito", system-ui, -apple-system, "Segoe UI", sans-serif;
+      --fonte: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      background: var(--plano);
+      color: var(--texto);
+      font: 15px/1.5 var(--fonte);
+      -webkit-font-smoothing: antialiased;
+    }
+    h1, h2, h3, p { margin: 0; }
+    h1, h2, h3 { font-family: var(--fonte-titulo); font-weight: 800; }
+    [hidden] { display: none !important; }
+
+    /* Foco de teclado sempre visível */
+    :focus-visible { outline: 3px solid var(--foco); outline-offset: 2px; border-radius: 6px; }
+
+    .so-leitor {
+      position: absolute; width: 1px; height: 1px;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+    }
+
+    /* ======================================================================
+       2. BOTÕES E CAMPOS
+       ====================================================================== */
+    .botao {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      min-height: 44px; padding: 0 18px;
+      border: 1px solid var(--azul); border-radius: 10px;
+      background: var(--azul); color: #FFFFFF;
+      font: 600 15px/1 var(--fonte);
+      cursor: pointer; text-decoration: none;
+      transition: background-color .15s;
+    }
+    .botao:hover { background: var(--azul-escuro); }
+    .botao svg { width: 18px; height: 18px; flex: none; }
+    .botao.contorno { background: var(--cartao); color: var(--azul); border-color: var(--borda-forte); }
+    .botao.contorno:hover { background: var(--azul-claro); }
+    .botao.no-escuro { background: transparent; color: #FFFFFF; border-color: rgba(255, 255, 255, .45); }
+    .botao.no-escuro:hover { background: rgba(255, 255, 255, .12); }
+    .botao.no-escuro:focus-visible { outline-color: #FFFFFF; }
+
+    .campo { display: flex; flex-direction: column; gap: 6px; }
+    .campo label { font-weight: 600; font-size: 14px; color: var(--texto-2); }
+    .campo input {
+      height: 46px; padding: 0 14px;
+      border: 1px solid var(--borda-forte); border-radius: 8px;
+      background: #FFFFFF; color: var(--texto);
+      font: 16px var(--fonte);
+    }
+    .campo input:focus-visible { outline-offset: 0; border-color: var(--foco); }
+
+    /* ======================================================================
+       3. LOGO (ícone genérico em SVG)
+       ====================================================================== */
+    .logo {
+      flex: none; display: grid; place-items: center;
+      width: 42px; height: 42px;
+    }
+    .logo svg { width: 100%; height: 100%; }
+    .logo.grande { width: 60px; height: 60px; }
+
+    /* ======================================================================
+       4. TELA DE LOGIN
+       ====================================================================== */
+    #tela-login {
+      min-height: 100vh; min-height: 100dvh;
+      display: grid; place-items: center; padding: 24px;
+    }
+    .cartao-login {
+      width: min(400px, 100%);
+      display: flex; flex-direction: column; gap: 18px;
+      padding: 32px;
+      background: var(--cartao); border: 1px solid var(--borda);
+      border-radius: 16px; box-shadow: var(--sombra);
+    }
+    .cartao-login h1 { font-size: 22px; line-height: 1.25; }
+    .cartao-login .sub { color: var(--texto-2); margin-top: 2px; }
+    .mensagem-erro {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 14px; border-radius: 8px;
+      background: var(--erro-fundo); color: var(--erro-texto);
+      font-weight: 600;
+    }
+    .mensagem-erro svg { width: 20px; height: 20px; flex: none; }
+    .nota-login { font-size: 13px; color: var(--texto-3); }
+
+    /* ======================================================================
+       5. PAINEL: CABEÇALHO
+       ====================================================================== */
+    .cabecalho {
+      position: sticky; top: 0; z-index: 5;
+      display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+      padding: 12px clamp(16px, 3vw, 32px);
+      background: var(--marinho); color: #FFFFFF;
+    }
+    .cabecalho .marca { display: flex; align-items: center; gap: 12px; margin-right: auto; }
+    .cabecalho .nome { font: 800 19px/1.2 var(--fonte-titulo); }
+    .cabecalho .produto { font-size: 13px; color: #C5D2E3; }
+    .cabecalho .usuario { font-size: 14px; color: #DCE5F0; }
+    @media (max-width: 860px) { .cabecalho .usuario { display: none; } }
+
+    .conteudo {
+      width: min(1200px, 100%);
+      margin: 0 auto;
+      padding: clamp(16px, 3vw, 32px);
+      display: flex; flex-direction: column; gap: 20px;
+    }
+    .linha-titulo { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+    .linha-titulo h1 { font-size: 24px; line-height: 1.2; }
+    .linha-titulo .sub { color: var(--texto-2); }
+    .linha-titulo .acoes { margin-left: auto; display: flex; gap: 10px; }
+
+    .cartao {
+      background: var(--cartao); border: 1px solid var(--borda);
+      border-radius: var(--raio); box-shadow: var(--sombra);
+    }
+
+    /* ======================================================================
+       5b. SESSÃO AO VIVO (cartão destacado no topo)
+       ====================================================================== */
+    .ao-vivo {
+      display: flex; align-items: center; gap: 16px 28px; flex-wrap: wrap;
+      padding: 18px 22px;
+      background: #F7F9FB; border-color: var(--borda);
+      box-shadow: none;
+    }
+    .ao-vivo .estado { display: flex; align-items: center; gap: 10px; }
+    .ao-vivo h2 { font-size: 15px; font-weight: 700; color: var(--texto-2); }
+    .ao-vivo .vazio-ao-vivo { color: var(--texto-3); }
+    .ponto-vivo {
+      position: relative; flex: none;
+      width: 12px; height: 12px; border-radius: 50%;
+      background: #B3BCC8;
+    }
+
+    /* Com alguém jogando: verde suave */
+    .ao-vivo.ativo {
+      background: #EEF8F1; border-color: #A9D8B8;
+      box-shadow: var(--sombra);
+    }
+    .ao-vivo.ativo h2 { color: var(--ok-texto); }
+    .ao-vivo.ativo .ponto-vivo { background: #1B7A4B; }
+    .ao-vivo.ativo .ponto-vivo::after {          /* anel que pulsa devagar */
+      content: ""; position: absolute; inset: -5px; border-radius: 50%;
+      border: 2px solid #1B7A4B; opacity: 0;
+      animation: pulsar 2s ease-out infinite;
+    }
+    @keyframes pulsar { 0% { transform: scale(.6); opacity: .7; } 100% { transform: scale(1.5); opacity: 0; } }
+
+    .ao-vivo .corpo-ao-vivo { display: flex; align-items: center; gap: 16px 32px; flex-wrap: wrap; flex: 1 1 420px; }
+    .ao-vivo .quem { display: flex; flex-direction: column; gap: 2px; min-width: 0; margin-right: auto; }
+    .ao-vivo .rotulo { font-size: 13px; font-weight: 600; color: var(--texto-2); }
+    .ao-vivo .nome { font: 800 28px/1.15 var(--fonte-titulo); overflow-wrap: anywhere; }
+    .ao-vivo .linha-nome { display: flex; align-items: center; gap: 10px 12px; flex-wrap: wrap; }
+    .ao-vivo .detalhe { color: var(--texto-2); }
+    .ao-vivo .tempo { display: flex; flex-direction: column; gap: 2px; }
+    /* Relógio: algarismos de largura fixa, para os números não "dançarem". */
+    .ao-vivo .relogio { font: 800 34px/1.1 var(--fonte-titulo); font-variant-numeric: tabular-nums; }
+
+    /* ======================================================================
+       6. CARTÕES DE RESUMO
+       ====================================================================== */
+    .resumo { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+    @media (max-width: 960px) { .resumo { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 480px) { .resumo { grid-template-columns: minmax(0, 1fr); } }
+    .indicador { padding: 18px 20px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    .indicador .rotulo { font-size: 13px; font-weight: 600; color: var(--texto-2); }
+    .indicador .valor { font: 800 30px/1.15 var(--fonte-titulo); overflow-wrap: anywhere; }
+    .indicador .apoio { font-size: 13px; color: var(--texto-3); }
+
+    /* ======================================================================
+       7. TABELA DE PACIENTES
+       ====================================================================== */
+    .cartao-tabela { overflow: hidden; }
+    .cartao-tabela .topo { padding: 16px 20px; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+    .cartao-tabela h2 { font-size: 17px; }
+    .cartao-tabela .dica { color: var(--texto-3); font-size: 13px; }
+    .rolagem { overflow-x: auto; }
+
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 12px 12px; text-align: left; white-space: nowrap; }
+    th:first-child, td:first-child { padding-left: 20px; }
+    th:last-child, td:last-child { padding-right: 20px; }
+    thead th {
+      background: #FAF8F5;
+      border-top: 1px solid var(--borda); border-bottom: 1px solid var(--borda);
+      font-size: 13px; font-weight: 600; color: var(--texto-2);
+    }
+    #tabela-pacientes thead th { padding: 0; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    /* Em telas mais estreitas, as colunas menos importantes somem, uma de cada
+       vez; os dados continuam no detalhe do paciente. */
+    @media (max-width: 1180px) { .col-opcional { display: none; } }     /* Última sessão */
+    @media (max-width: 860px) { .col-opcional-2 { display: none; } }    /* Tempo total */
+    @media (max-width: 1020px) {
+      #tabela-pacientes td { padding-left: 6px; padding-right: 6px; }
+      #tabela-pacientes .ordenar { padding-left: 6px; padding-right: 6px; }
+      #tabela-pacientes td:first-child, #tabela-pacientes th:first-child .ordenar { padding-left: 14px; }
+      #tabela-pacientes td:last-child, #tabela-pacientes th:last-child .ordenar { padding-right: 12px; }
+      #tabela-pacientes .avatar { display: none; }
+    }
+
+    /* Cabeçalhos clicáveis para ordenar */
+    .ordenar {
+      width: 100%; min-height: 44px; padding: 0 12px;
+      display: flex; align-items: center; gap: 6px;
+      border: 0; background: none; color: inherit;
+      font: inherit; cursor: pointer; text-align: left;
+      white-space: normal; line-height: 1.2;      /* título longo quebra em duas linhas */
+    }
+    th.num .ordenar { justify-content: flex-end; text-align: right; }
+    th:first-child .ordenar { padding-left: 20px; }
+    th:last-child .ordenar { padding-right: 20px; }
+    .ordenar:hover { color: var(--texto); background: #EEF2F6; }
+    .ordenar .seta { width: 12px; height: 12px; flex: none; opacity: 0; }
+    th[aria-sort="ascending"] .seta, th[aria-sort="descending"] .seta { opacity: 1; }
+    th[aria-sort="descending"] .seta { transform: rotate(180deg); }
+    th[aria-sort="ascending"] .ordenar, th[aria-sort="descending"] .ordenar { color: var(--texto); }
+
+    tbody tr { border-bottom: 1px solid var(--borda); cursor: pointer; }
+    tbody tr:last-child { border-bottom: 0; }
+    tbody tr:hover { background: #F5F8FC; }
+    tbody td { height: 60px; }
+
+    .celula-paciente { display: flex; align-items: center; gap: 12px; }
+    .avatar {
+      flex: none; display: grid; place-items: center;
+      width: 36px; height: 36px; border-radius: 50%;
+      background: var(--azul-claro); color: var(--azul-escuro);
+      font-size: 13px; font-weight: 700;
+    }
+    .avatar.grande { width: 48px; height: 48px; font-size: 16px; }
+    .link-paciente {
+      border: 0; background: none; padding: 4px 2px;
+      color: var(--texto); font: 600 15px var(--fonte);
+      cursor: pointer; text-align: left;
+    }
+    tbody tr:hover .link-paciente, .link-paciente:hover { color: var(--azul); text-decoration: underline; }
+
+    .ultima { display: flex; flex-direction: column; line-height: 1.3; }
+    .ultima .quando { font-size: 13px; color: var(--texto-3); }
+
+    /* Selo de situação: sempre ícone + texto (nunca só cor) */
+    .selo {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 3px 10px; border-radius: 999px;
+      font-size: 12.5px; font-weight: 600; white-space: nowrap;
+    }
+    .selo svg { width: 14px; height: 14px; flex: none; }
+    .selo.ok { background: var(--ok-fundo); color: var(--ok-texto); }
+    .selo.alerta { background: var(--alerta-fundo); color: var(--alerta-texto); }
+    .selo.neutro { background: #EFECE7; color: var(--texto-2); }
+    .selo.cuidado { background: var(--cuidado-fundo); color: var(--cuidado-texto); }
+    .selo .rosto { width: 16px; height: 16px; }
+
+    .vazio { padding: 32px 20px; text-align: center; color: var(--texto-2); }
+
+    /* ======================================================================
+       7b. AVISOS SUTIS ("Para acompanhar de perto")
+       ====================================================================== */
+    .cartao-avisos .topo { padding: 16px 20px 4px; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+    .cartao-avisos h2 { font-size: 17px; }
+    .cartao-avisos .dica { color: var(--texto-3); font-size: 13px; }
+    .lista-avisos { list-style: none; margin: 0; padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 6px; }
+    .lista-avisos li { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; background: #FBF9F6; }
+    .lista-avisos .icone {
+      flex: none; display: grid; place-items: center;
+      width: 34px; height: 34px; border-radius: 50%;
+      background: var(--alerta-fundo); color: var(--alerta-texto);
+    }
+    .lista-avisos .icone svg { width: 18px; height: 18px; }
+    .lista-avisos .tudo-bem .icone { background: var(--ok-fundo); color: var(--ok-texto); }
+    .lista-avisos .texto { flex: 1; min-width: 0; }
+    .lista-avisos .botao { min-height: 38px; padding: 0 14px; font-size: 14px; }
+
+    /* ======================================================================
+       8. RODAPÉ: SOBRE OS DADOS
+       ====================================================================== */
+    .rodape-dados { padding: 16px 20px; display: flex; align-items: center; gap: 12px 20px; flex-wrap: wrap; }
+    .rodape-dados p { flex: 1 1 320px; color: var(--texto-2); font-size: 13.5px; }
+    .rodape-dados .acoes { display: flex; gap: 10px; flex-wrap: wrap; }
+
+    /* ======================================================================
+       9. DETALHE DO PACIENTE (painel lateral)
+       ====================================================================== */
+    dialog.detalhe {
+      margin: 0 0 0 auto;
+      width: min(620px, 100vw);
+      height: 100vh; height: 100dvh; max-height: none; max-width: none;
+      padding: 0; border: 0;
+      background: var(--plano); color: var(--texto);
+      box-shadow: -8px 0 32px rgba(16, 41, 74, .2);
+    }
+    dialog.detalhe::backdrop { background: rgba(16, 41, 74, .4); }
+    .detalhe-corpo { height: 100%; overflow-y: auto; display: flex; flex-direction: column; }
+    .detalhe-topo {
+      position: sticky; top: 0; z-index: 2;
+      display: flex; align-items: center; gap: 14px;
+      padding: 16px 20px;
+      background: var(--cartao); border-bottom: 1px solid var(--borda);
+    }
+    .detalhe-topo h2 { font-size: 20px; line-height: 1.2; }
+    .detalhe-topo .identidade { display: flex; flex-direction: column; gap: 4px; margin-right: auto; min-width: 0; }
+    .fechar {
+      flex: none; width: 44px; height: 44px;
+      display: grid; place-items: center;
+      border: 1px solid var(--borda-forte); border-radius: 8px;
+      background: var(--cartao); color: var(--texto-2); cursor: pointer;
+    }
+    .fechar:hover { background: var(--azul-claro); color: var(--texto); }
+    .fechar svg { width: 20px; height: 20px; }
+
+    .detalhe-secoes { padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+    .mini-resumo { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    @media (max-width: 560px) { .mini-resumo { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    .mini { padding: 12px 14px; display: flex; flex-direction: column; gap: 2px; }
+    .mini .rotulo { font-size: 12.5px; font-weight: 600; color: var(--texto-2); }
+    .mini .valor { font: 800 20px/1.2 var(--fonte-titulo); }
+
+    .cartao-grafico { padding: 16px 18px 12px; }
+    .cartao-grafico .topo { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; margin-bottom: 12px; }
+    .cartao-grafico h3, .cartao-sessoes h3 { font-size: 15px; }
+    .cartao-grafico .legenda { font-size: 13px; color: var(--texto-3); margin-top: 6px; }
+
+    /* Seletor da medida do gráfico (botões de rádio estilizados) */
+    .seletor { display: inline-flex; padding: 3px; border-radius: 9px; background: #EFECE7; }
+    .cartao-grafico .controles { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+    .seletor label { position: relative; }
+    .seletor input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+    .seletor span {
+      display: block; padding: 6px 12px; border-radius: 7px;
+      font-size: 13px; font-weight: 600; color: var(--texto-2);
+    }
+    .seletor input:checked + span { background: var(--cartao); color: var(--texto); box-shadow: 0 1px 2px rgba(16, 41, 74, .15); }
+    .seletor input:focus-visible + span { outline: 3px solid var(--foco); outline-offset: 1px; }
+
+    .area-grafico { position: relative; height: 220px; }
+    .sem-grafico { padding: 24px 8px; color: var(--texto-2); text-align: center; }
+
+    .cartao-sessoes { overflow: hidden; }
+    .cartao-sessoes .topo { padding: 14px 18px; }
+    .cartao-sessoes th, .cartao-sessoes td { padding: 9px 8px; }
+    .cartao-sessoes thead th { padding: 9px 8px; white-space: normal; line-height: 1.2; vertical-align: bottom; }
+    .cartao-sessoes th:first-child, .cartao-sessoes td:first-child { padding-left: 18px; }
+    .cartao-sessoes th:last-child, .cartao-sessoes td:last-child { padding-right: 18px; }
+    .cartao-sessoes tbody tr { cursor: default; }
+    .cartao-sessoes tbody tr:hover { background: none; }
+    .cartao-sessoes tbody td { height: auto; }
+    .cartao-sessoes .etiqueta { display: table; margin: 2px 0 0; }   /* etiqueta embaixo da data */
+    .etiqueta {
+      display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 6px;
+      background: #EEF1F5; color: var(--texto-2); font-size: 11.5px; font-weight: 600;
+    }
+
+    /* ---- Detalhe: bem-estar, leituras e recado ---- */
+    .tira-bem-estar { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+    .tira-bem-estar .rotulo { font-size: 12.5px; font-weight: 600; color: var(--texto-2); }
+    .tira-bem-estar .selos { display: flex; flex-wrap: wrap; gap: 6px; }
+
+    /* [NÍVEL] Linha discreta com o nível de dificuldade da última sessão */
+    .linha-nivel { padding: 0 4px; font-size: 13.5px; color: var(--texto-2); }
+
+    .cartao-leitura { padding: 16px 18px; }
+    .cartao-leitura h3, .cartao-recado h3 { font-size: 15px; }
+    .lista-leitura { margin: 10px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; }
+    .cartao-leitura .nota { margin-top: 12px; font-size: 12.5px; color: var(--texto-3); }
+
+    .cartao-recado { padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+    .cartao-recado .dica { font-size: 13px; color: var(--texto-2); }
+    .cartao-recado textarea {
+      width: 100%; min-height: 84px; padding: 10px 12px;
+      border: 1px solid var(--borda-forte); border-radius: 10px;
+      background: #FFFFFF; color: var(--texto);
+      font: 15px/1.5 var(--fonte); resize: vertical;
+    }
+    .cartao-recado textarea:focus-visible { outline-offset: 0; border-color: var(--foco); }
+    .cartao-recado .linha { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .cartao-recado .estado { margin-right: auto; font-size: 13px; color: var(--texto-2); }
+    .cartao-recado .contagem { font-size: 13px; color: var(--texto-3); font-variant-numeric: tabular-nums; }
+    .botao:disabled { background: #E7E2DA; border-color: #CFC8BD; color: #676D76; cursor: not-allowed; }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+      .ao-vivo.ativo .ponto-vivo::after { animation: none; opacity: .5; transform: none; }
+    }
+  </style>
+</head>
+
+<body>
+  <!-- Mensagens faladas pelo leitor de tela (ex.: "Tabela ordenada por…") -->
+  <div id="anuncio" class="so-leitor" aria-live="polite"></div>
+
+  <!-- ====================================================================
+       TELA DE LOGIN
+       ==================================================================== -->
+  <main id="tela-login" hidden>
+    <form id="form-login" class="cartao-login" novalidate>
+      <!-- Logo: o mesmo coração com um gesto de movimento que aparece no jogo. -->
+      <span class="logo grande" aria-hidden="true"><svg viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="24" fill="#A8D5BA"/><path d="M24 37 C 11 27.5, 10.5 17, 17 14.5 C 20.6 13.1, 23.3 15.2, 24 17.6 C 24.7 15.2, 27.4 13.1, 31 14.5 C 37.5 17, 37 27.5, 24 37 Z" fill="#F4A6A0" stroke="#B8463D" stroke-width="1.8" stroke-linejoin="round"/><path d="M35.5 9.5 q4.2 2.6 5 7.4 M39.6 5.6 q6 3.8 7 10.6" fill="none" stroke="#2E7D57" stroke-width="2.4" stroke-linecap="round"/></svg></span>
+      <div>
+        <h1>Painel do Profissional</h1>
+        <p class="sub"><span class="nome-produto">Movimento Leve</span> · acompanhamento com carinho</p>
+      </div>
+
+      <div class="campo">
+        <label for="login-usuario">Usuário</label>
+        <input id="login-usuario" name="usuario" type="text" autocomplete="username" autocapitalize="characters" spellcheck="false" required>
+      </div>
+      <div class="campo">
+        <label for="login-senha">Senha</label>
+        <input id="login-senha" name="senha" type="password" autocomplete="current-password" required>
+      </div>
+
+      <p id="login-erro" class="mensagem-erro" role="alert" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5M12 16.2v.3"/></svg>
+        <span>Usuário ou senha incorretos.</span>
+      </p>
+
+      <button class="botao" type="submit">Entrar</button>
+      <p class="nota-login">Acesso restrito ao profissional responsável.</p>
+    </form>
+  </main>
+
+  <!-- ====================================================================
+       PAINEL (só aparece depois do login)
+       ==================================================================== -->
+  <div id="painel" hidden>
+    <header class="cabecalho">
+      <div class="marca">
+        <span class="logo" aria-hidden="true"><svg viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="24" fill="#A8D5BA"/><path d="M24 37 C 11 27.5, 10.5 17, 17 14.5 C 20.6 13.1, 23.3 15.2, 24 17.6 C 24.7 15.2, 27.4 13.1, 31 14.5 C 37.5 17, 37 27.5, 24 37 Z" fill="#F4A6A0" stroke="#B8463D" stroke-width="1.8" stroke-linejoin="round"/><path d="M35.5 9.5 q4.2 2.6 5 7.4 M39.6 5.6 q6 3.8 7 10.6" fill="none" stroke="#2E7D57" stroke-width="2.4" stroke-linecap="round"/></svg></span>
+        <div>
+          <div class="nome">Painel do Profissional</div>
+          <div class="produto"><span class="nome-produto">Movimento Leve</span> · Segure o bonequinho</div>
+        </div>
+      </div>
+      <span class="usuario">Conectado como <strong id="usuario-logado"></strong></span>
+      <a id="link-atividade" class="botao no-escuro" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
+        Abrir atividade
+      </a>
+      <button id="botao-sair" class="botao no-escuro" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 16l4-4-4-4M14 12H4"/></svg>
+        Sair
+      </button>
+    </header>
+
+    <main class="conteudo">
+      <div class="linha-titulo">
+        <div>
+          <h1>Visão geral</h1>
+          <p class="sub" id="atualizado-em"></p>
+        </div>
+        <div class="acoes">
+          <button id="botao-atualizar" class="botao contorno" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v5h-5"/></svg>
+            Atualizar
+          </button>
+        </div>
+      </div>
+
+      <!-- SESSÃO AO VIVO: quem está jogando agora (atualiza sozinho) -->
+      <section id="ao-vivo" class="cartao ao-vivo" aria-labelledby="ao-vivo-titulo">
+        <div class="estado">
+          <span class="ponto-vivo" aria-hidden="true"></span>
+          <h2 id="ao-vivo-titulo">Sessão ao vivo</h2>
+        </div>
+
+        <p id="ao-vivo-vazio" class="vazio-ao-vivo">Nenhuma sessão ao vivo no momento.</p>
+
+        <div id="ao-vivo-conteudo" class="corpo-ao-vivo" hidden>
+          <div class="quem">
+            <span class="rotulo">Nome do usuário</span>
+            <div class="linha-nome">
+              <span class="nome" id="ao-vivo-nome"></span>
+              <span id="ao-vivo-tipo"></span>
+            </div>
+            <span class="detalhe" id="ao-vivo-detalhe"></span>
+          </div>
+          <div class="tempo">
+            <span class="rotulo">Tempo decorrido</span>
+            <span class="relogio" id="ao-vivo-relogio" role="timer">00:00</span>
+          </div>
+          <button id="ao-vivo-historico" class="botao contorno" type="button" hidden>Ver histórico</button>
+        </div>
+      </section>
+
+      <!-- Cartões de resumo -->
+      <section class="resumo" aria-label="Resumo geral">
+        <div class="cartao indicador">
+          <span class="rotulo">Pacientes</span>
+          <span class="valor" id="res-pacientes">0</span>
+          <span class="apoio" id="res-pacientes-apoio"></span>
+        </div>
+        <div class="cartao indicador">
+          <span class="rotulo">Sessões realizadas</span>
+          <span class="valor" id="res-sessoes">0</span>
+          <span class="apoio" id="res-sessoes-apoio"></span>
+        </div>
+        <div class="cartao indicador">
+          <span class="rotulo">Tempo total de uso</span>
+          <span class="valor" id="res-tempo">0</span>
+          <span class="apoio" id="res-tempo-apoio"></span>
+        </div>
+        <div class="cartao indicador">
+          <span class="rotulo">Paciente mais ativo</span>
+          <span class="valor" id="res-ativo">—</span>
+          <span class="apoio" id="res-ativo-apoio"></span>
+        </div>
+      </section>
+
+      <!-- AVISOS SUTIS: o que merece um olhar mais de perto. Nunca um diagnóstico. -->
+      <section class="cartao cartao-avisos" aria-labelledby="avisos-titulo">
+        <div class="topo">
+          <h2 id="avisos-titulo">Para acompanhar de perto</h2>
+          <span class="dica">Sinais simples, a partir do que cada pessoa contou e da frequência. Não são diagnóstico.</span>
+        </div>
+        <ul id="lista-avisos" class="lista-avisos"><!-- montado pelo JavaScript --></ul>
+      </section>
+
+      <!-- Tabela principal -->
+      <section class="cartao cartao-tabela" aria-labelledby="titulo-pacientes">
+        <div class="topo">
+          <h2 id="titulo-pacientes">Pacientes</h2>
+          <span class="dica">Clique num título para ordenar e num paciente para ver o histórico.
+            Cada captura é manter a mão sobre o boneco por <span id="dica-segundos">3</span> s.</span>
+        </div>
+        <div class="rolagem">
+          <table id="tabela-pacientes">
+            <thead>
+              <tr id="cabecalho-tabela"><!-- montado pelo JavaScript --></tr>
+            </thead>
+            <tbody id="corpo-tabela"><!-- montado pelo JavaScript --></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Sobre os dados -->
+      <section class="cartao rodape-dados" aria-label="Sobre os dados">
+        <p>
+          Os dados ficam guardados <strong>somente neste navegador</strong> (localStorage).
+          Se o histórico do navegador for limpo, eles se perdem.
+          <span id="nota-exemplo"></span>
+        </p>
+        <div class="acoes">
+          <button id="botao-remover-exemplo" class="botao contorno" type="button">Remover dados de exemplo</button>
+          <button id="botao-restaurar-exemplo" class="botao contorno" type="button">Restaurar dados de exemplo</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ====================================================================
+       DETALHE DO PACIENTE (abre ao clicar numa linha da tabela)
+       ==================================================================== -->
+  <dialog id="detalhe" class="detalhe" aria-labelledby="detalhe-nome">
+    <div class="detalhe-corpo">
+      <div class="detalhe-topo">
+        <span class="avatar grande" id="detalhe-avatar" aria-hidden="true"></span>
+        <div class="identidade">
+          <h2 id="detalhe-nome"></h2>
+          <span id="detalhe-selo"></span>
+        </div>
+        <button id="detalhe-fechar" class="fechar" type="button" aria-label="Fechar detalhe">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+
+      <div class="detalhe-secoes">
+        <div class="mini-resumo">
+          <div class="cartao mini"><span class="rotulo">Sessões</span><span class="valor" id="det-sessoes"></span></div>
+          <div class="cartao mini"><span class="rotulo">Capturas</span><span class="valor" id="det-capturas"></span></div>
+          <div class="cartao mini"><span class="rotulo">Tempo total</span><span class="valor" id="det-tempo"></span></div>
+          <div class="cartao mini"><span class="rotulo">Média por captura</span><span class="valor" id="det-media"></span></div>
+        </div>
+
+        <!-- Como a pessoa disse que estava, nas últimas sessões (mais recente primeiro) -->
+        <div class="cartao tira-bem-estar">
+          <span class="rotulo">Como disse que estava (mais recente primeiro)</span>
+          <div class="selos" id="det-bem-estar"></div>
+        </div>
+
+        <!-- [NÍVEL] Nível de dificuldade do jogo na última sessão. É informação de
+             acompanhamento, não de desempenho: por isso fica discreta. -->
+        <p class="linha-nivel" id="det-nivel"></p>
+
+        <!-- Leituras curtas e humanas dos números -->
+        <section class="cartao cartao-leitura" aria-labelledby="leitura-titulo">
+          <h3 id="leitura-titulo">O que os números sugerem</h3>
+          <ul id="lista-leitura" class="lista-leitura"></ul>
+          <p class="nota">Leituras automáticas e simples, para apoiar a conversa. Não substituem a sua avaliação.</p>
+        </section>
+
+        <section class="cartao cartao-grafico" aria-labelledby="grafico-titulo">
+          <div class="topo">
+            <h3 id="grafico-titulo">Evolução</h3>
+            <div class="controles">
+              <!-- Por sessão (barras) ou por semana (linha, para comparar ao longo do tempo) -->
+              <div class="seletor" role="radiogroup" aria-label="Período do gráfico">
+                <label><input type="radio" name="periodo" value="sessao" checked><span>Por sessão</span></label>
+                <label><input type="radio" name="periodo" value="semana"><span>Por semana</span></label>
+              </div>
+              <div class="seletor" role="radiogroup" aria-label="Medida do gráfico">
+                <label><input type="radio" name="medida" value="capturas" checked><span>Capturas</span></label>
+                <label><input type="radio" name="medida" value="media"><span>Média por captura</span></label>
+                <label><input type="radio" name="medida" value="duracao"><span>Duração</span></label>
+              </div>
+            </div>
+          </div>
+          <div class="area-grafico" id="area-grafico">
+            <canvas id="grafico" role="img" aria-label="Gráfico da evolução do paciente. Os mesmos números estão descritos logo abaixo."></canvas>
+          </div>
+          <p class="sem-grafico" id="sem-grafico" hidden></p>
+          <p class="legenda" id="grafico-legenda"></p>
+          <!-- Os números do gráfico, em texto, para leitores de tela. -->
+          <p class="so-leitor" id="grafico-resumo"></p>
+        </section>
+
+        <!-- Recado do profissional: aparece para o paciente antes da próxima atividade -->
+        <section class="cartao cartao-recado" aria-labelledby="recado-titulo">
+          <h3 id="recado-titulo">Recado para o paciente</h3>
+          <p class="dica">Aparece na tela dele antes da próxima atividade, assinado por <strong id="recado-autor"></strong>. Um incentivo curto ajuda a manter o vínculo entre as consultas.</p>
+          <label class="so-leitor" for="recado-campo">Texto do recado</label>
+          <textarea id="recado-campo" placeholder="Ex.: Continue assim! Estou acompanhando o seu esforço."></textarea>
+          <div class="linha">
+            <span class="estado" id="recado-estado" aria-live="polite"></span>
+            <span class="contagem" id="recado-contagem"></span>
+            <button id="recado-apagar" class="botao contorno" type="button">Apagar recado</button>
+            <button id="recado-salvar" class="botao" type="button">Salvar recado</button>
+          </div>
+        </section>
+
+        <section class="cartao cartao-sessoes" aria-labelledby="sessoes-titulo">
+          <div class="topo"><h3 id="sessoes-titulo">Sessões recentes</h3></div>
+          <div class="rolagem">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Data</th>
+                  <th scope="col">Bem-estar</th>
+                  <th scope="col" class="num">Duração</th>
+                  <th scope="col" class="num">Capturas</th>
+                  <th scope="col" class="num">Média por captura</th>
+                </tr>
+              </thead>
+              <tbody id="corpo-sessoes"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </div>
+  </dialog>
+
+  <script>
+  /* ==========================================================================
+     FORMATO DOS DADOS (o mesmo que o index.html grava)
+
+     localStorage[STORAGE_KEY_PATIENTS] → lista de pacientes:
+       [ { "id": "thais-g", "nome": "Thaís G" }, … ]
+
+     localStorage[STORAGE_KEY_SESSIONS] → lista de sessões:
+       [ {
+           "id": "s_mgk3x1_a8f2",          // identificador único da sessão
+           "pacienteId": "thais-g",         // de quem é a sessão
+           "atividade": "segure-o-boneco",  // qual atividade
+           "inicio": "2026-10-07T12:10:00.000Z",
+           "fim":    "2026-10-07T12:19:30.000Z",
+           "duracaoSeg": 570,               // tempo de uso, em segundos
+           "capturas": 21,                  // vezes que segurou o boneco
+           "temposCaptura": [18.2, 25.1],   // segundos gastos em cada captura
+           "modo": "camera",                // "camera" ou "mouse"
+           "bemEstar": "bem",               // "bem", "dor", "dificuldade" ou null
+           "nivelInicial": 1,               // [NÍVEL] nível de dificuldade no começo…
+           "nivelFinal": 4,                 //         …no fim…
+           "nivelMaximo": 5,                //         …e o maior alcançado na sessão
+           "exemplo": true                  // só nos dados fictícios
+         }, … ]
+
+     localStorage[STORAGE_KEY_MESSAGES] → um recado por paciente:
+       { "p-ivone": {
+           "texto": "Continue assim, Dona Ivone!",
+           "autor": "Dra. Ana",
+           "criadoEm": "2026-10-07T12:00:00.000Z",
+           "vistoEm": null                  // o jogo preenche quando o paciente vê
+         } }
+
+     localStorage[ACTIVE_SESSION_KEY] → a sessão que está acontecendo AGORA
+     (existe só enquanto alguém joga; não é histórico):
+       {
+         "sessionId": "v_mgk3x1_a8f2",    // identifica a aba/sessão do jogo
+         "playerName": "Yasmin B",        // nome digitado no jogo
+         "startedAt": 1728492000000,      // quando começou (ms)
+         "lastSeen": 1728492002000,       // último batimento do jogo (ms)
+         "captures": 3,
+         "isRegisteredPatient": false,    // true = também entra no histórico
+         "patientId": null,               // id do paciente, se for cadastrado
+         "wellbeing": "bem",              // como a pessoa disse que está (ou null)
+         "level": 3                       // [NÍVEL] nível de dificuldade de agora
+       }
+     ========================================================================== */
+
+  const $ = (id) => document.getElementById(id);
+  const DIA_MS = 24 * 60 * 60 * 1000;
+
+  /* ==========================================================================
+     CAMADA DE DADOS
+     ★ BACKEND FUTURO: estas são as ÚNICAS funções que falam com o
+     "banco de dados". Hoje elas usam o localStorage. Para ligar um backend
+     real (Supabase, Firebase ou API própria), troque só o corpo delas — o
+     resto do painel continua igual, porque já usa "await" em todas.
+
+     Exemplo com API própria:
+       async function fetchSessions() {
+         const resposta = await fetch('https://SEU-SERVIDOR/api/sessoes', {
+           headers: { Authorization: 'Bearer ' + tokenDoProfissional },
+         });
+         return resposta.json();
+       }
+
+     Exemplo com Supabase (tabelas "pacientes" e "sessoes"):
+       const banco = supabase.createClient(URL_DO_PROJETO, CHAVE_PUBLICA);
+       async function fetchPatients() {
+         const { data } = await banco.from('pacientes').select('*').order('nome');
+         return data;
+       }
+       async function fetchSessions() {
+         const { data } = await banco.from('sessoes').select('*');
+         return data;
+       }
+
+     Exemplo com Firebase (Firestore, coleção "sessoes"):
+       async function fetchSessions() {
+         const fotos = await getDocs(collection(db, 'sessoes'));
+         return fotos.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+       }
+
+     No index.html, a função equivalente é saveSession() (grava uma sessão).
+     ========================================================================== */
+  async function fetchPatients() {
+    const lista = lerJson(STORAGE_KEY_PATIENTS);
+    return Array.isArray(lista) && lista.length ? lista : DEFAULT_PATIENTS;
+  }
+
+  async function fetchSessions() {
+    const lista = lerJson(STORAGE_KEY_SESSIONS);
+    return Array.isArray(lista) ? lista : [];
+  }
+
+  // ---- Recados (um por paciente) --------------------------------------------
+  // ★ BACKEND FUTURO: troque o corpo destas três funções. Ex. com Supabase:
+  //     const { data } = await banco.from('recados').select('*');
+  //     await banco.from('recados').upsert({ paciente_id: pacienteId, ...recado });
+  //     await banco.from('recados').delete().eq('paciente_id', pacienteId);
+  async function fetchMessages() {
+    const recados = lerJson(STORAGE_KEY_MESSAGES);
+    return recados && typeof recados === 'object' ? recados : {};
+  }
+
+  async function saveMessage(pacienteId, recado) {
+    const todos = await fetchMessages();
+    todos[pacienteId] = recado;
+    return gravarJson(STORAGE_KEY_MESSAGES, todos);
+  }
+
+  async function deleteMessage(pacienteId) {
+    const todos = await fetchMessages();
+    delete todos[pacienteId];
+    return gravarJson(STORAGE_KEY_MESSAGES, todos);
+  }
+
+  function lerJson(chave) {
+    try { return JSON.parse(localStorage.getItem(chave)); }
+    catch (e) { return null; }
+  }
+
+  function gravarJson(chave, valor) {
+    try { localStorage.setItem(chave, JSON.stringify(valor)); return true; }
+    catch (e) { console.warn('Não foi possível gravar no localStorage.', e); return false; }
+  }
+
+  /* ==========================================================================
+     DADOS DE EXEMPLO (fictícios) — só para avaliar o layout
+     Cada linha: [dias atrás, hora, minuto, duração em min, capturas, média em s,
+                  bem-estar]   (B = bem, D = um pouco de dor, F = com dificuldade)
+     As datas são calculadas a partir de HOJE, então os dados sempre parecem
+     recentes. Perfis:
+       • Thaís G  — a mais assídua: 12 sessões, melhorando a cada semana.
+       • Durval J — poucas sessões, com dificuldade, e parado há quase duas semanas.
+       • P Ivone  — sessões longas, demora para capturar e relatou dor em 3
+                    das últimas 4 (tem um recado de exemplo esperando por ela).
+       • Thiago A — começou há poucos dias; última sessão hoje.
+     Com backend real, apague este bloco inteiro.
+     ========================================================================== */
+  const B = 'bem', D = 'dor', F = 'dificuldade';
+  const EXAMPLE_PLAN = {
+    'thais-g': [
+      [27, 9, 10, 8.5, 13, 24, B], [25, 9, 5, 9.0, 14, 23, B], [23, 9, 20, 8.0, 14, 22, D],
+      [20, 9, 15, 9.5, 17, 21, B], [18, 9, 0, 10.0, 18, 20, B], [16, 9, 10, 9.0, 18, 19, B],
+      [13, 9, 5, 10.5, 21, 18, B], [11, 9, 30, 10.0, 21, 17, B], [9, 9, 10, 11.0, 24, 16, B],
+      [6, 9, 0, 10.5, 23, 16, B], [4, 9, 15, 11.5, 27, 15, B], [2, 9, 10, 11.0, 26, 14, B],
+    ],
+    'durval-j': [
+      [26, 15, 30, 5.5, 6, 34, F], [19, 15, 10, 6.0, 7, 31, B], [12, 15, 20, 4.5, 6, 29, F],
+    ],
+    'p-ivone': [
+      [24, 10, 40, 12.0, 8, 56, B], [21, 10, 30, 13.5, 9, 54, B], [17, 10, 45, 11.5, 8, 52, D],
+      [14, 10, 30, 14.0, 10, 50, D], [10, 10, 35, 12.5, 9, 51, D], [7, 10, 40, 13.0, 10, 47, B],
+      [4, 10, 30, 14.5, 11, 46, D],
+    ],
+    'thiago-a': [
+      [6, 16, 0, 6.0, 9, 26, B], [4, 16, 20, 7.0, 12, 22, B], [3, 16, 5, 7.5, 14, 20, D],
+      [1, 16, 10, 8.0, 16, 19, B], [0, 8, 30, 7.0, 15, 18, B],
+    ],
+  };
+  // Recado de exemplo (some junto com os dados de exemplo).
+  const EXAMPLE_MESSAGES = {
+    'p-ivone': 'Continue assim, Dona Ivone! Estou acompanhando o seu esforço.',
+  };
+
+  function gerarSessoesDeExemplo() {
+    const agora = new Date();
+    const sessoes = [];
+    for (const [pacienteId, linhas] of Object.entries(EXAMPLE_PLAN)) {
+      linhas.forEach(([dias, hora, minuto, duracaoMin, capturas, media, bemEstar], n) => {
+        let inicio = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate() - dias, hora, minuto);
+        const duracaoSeg = Math.round(duracaoMin * 60);
+        // Uma sessão de "hoje" não pode estar no futuro.
+        if (inicio.getTime() + duracaoSeg * 1000 > agora.getTime()) {
+          inicio = new Date(agora.getTime() - duracaoSeg * 1000 - 45 * 60 * 1000);
+        }
+        // Tempos de cada captura: variam em torno da média, sem sorteio
+        // (assim os dados de exemplo são sempre os mesmos).
+        const temposCaptura = Array.from({ length: capturas }, (_, i) => {
+          const variacao = 0.65 + 0.7 * (((i + 1) * 0.618 + n * 0.37) % 1);
+          return Math.round(media * variacao * 10) / 10;
+        });
+        // [NÍVEL] Nível de exemplo: mais capturas, nível mais alto; quem relatou
+        // dor ou dificuldade sobe mais devagar (como no jogo).
+        const nivelFinal = Math.max(1, Math.min(10, Math.round(1 + capturas / 6 * (bemEstar === 'bem' ? 1 : 0.4))));
+        sessoes.push({
+          id: `exemplo_${pacienteId}_${n + 1}`,
+          pacienteId,
+          atividade: 'segure-o-boneco',
+          inicio: inicio.toISOString(),
+          fim: new Date(inicio.getTime() + duracaoSeg * 1000).toISOString(),
+          duracaoSeg, capturas, temposCaptura,
+          modo: 'camera',
+          bemEstar,
+          nivelInicial: 1, nivelFinal, nivelMaximo: nivelFinal,
+          exemplo: true,
+        });
+      });
+    }
+    return sessoes;
+  }
+
+  // Na primeira vez neste navegador: cadastra os pacientes e cria o exemplo.
+  function garantirDadosIniciais() {
+    // A lista de pacientes vem da constante REGISTERED_PATIENTS (topo do arquivo).
+    gravarJson(STORAGE_KEY_PATIENTS, DEFAULT_PATIENTS);
+    // Cria o exemplo na primeira vez (ou quando o formato do exemplo mudou).
+    if (localStorage.getItem(STORAGE_KEY_SEED) !== EXAMPLE_VERSION) {
+      restaurarExemplo();
+    }
+  }
+
+  function restaurarExemplo() {
+    const reais = (lerJson(STORAGE_KEY_SESSIONS) || []).filter((s) => !s.exemplo);
+    gravarJson(STORAGE_KEY_SESSIONS, [...reais, ...gerarSessoesDeExemplo()]);
+    // Recados de exemplo: só para quem ainda não tem um recado de verdade.
+    const recados = lerJson(STORAGE_KEY_MESSAGES) || {};
+    for (const [pacienteId, texto] of Object.entries(EXAMPLE_MESSAGES)) {
+      if (!recados[pacienteId]) {
+        recados[pacienteId] = { texto, autor: PROFESSIONAL_NAME, criadoEm: new Date().toISOString(), vistoEm: null, exemplo: true };
+      }
+    }
+    gravarJson(STORAGE_KEY_MESSAGES, recados);
+    try { localStorage.setItem(STORAGE_KEY_SEED, EXAMPLE_VERSION); } catch (e) { /* sem localStorage */ }
+  }
+
+  function removerExemplo() {
+    const reais = (lerJson(STORAGE_KEY_SESSIONS) || []).filter((s) => !s.exemplo);
+    gravarJson(STORAGE_KEY_SESSIONS, reais);
+    const recados = lerJson(STORAGE_KEY_MESSAGES) || {};
+    for (const id of Object.keys(recados)) if (recados[id].exemplo) delete recados[id];
+    gravarJson(STORAGE_KEY_MESSAGES, recados);
+  }
+
+  /* ==========================================================================
+     CÁLCULOS: junta as sessões de cada paciente
+     ========================================================================== */
+  function resumirPaciente(paciente, sessoes) {
+    const minhas = sessoes
+      .filter((s) => s.pacienteId === paciente.id)
+      .sort((a, b) => new Date(a.inicio) - new Date(b.inicio));   // da mais antiga para a mais nova
+    const ultima = minhas[minhas.length - 1] || null;
+    const todosOsTempos = minhas.flatMap((s) => Array.isArray(s.temposCaptura) ? s.temposCaptura : []);
+    // Relatos de bem-estar, do mais recente para o mais antigo.
+    const relatos = minhas
+      .filter((s) => WELLBEING_OPTIONS.some((o) => o.id === s.bemEstar))
+      .map((s) => ({ id: s.bemEstar, data: new Date(s.inicio) }))
+      .reverse();
+    const ultimoBemEstar = relatos.length ? relatos[0].id : null;
+    return {
+      id: paciente.id,
+      nome: paciente.nome,
+      sessoes: minhas,
+      totalSessoes: minhas.length,
+      capturas: somar(minhas.map((s) => s.capturas || 0)),
+      tempoTotalSeg: somar(minhas.map((s) => s.duracaoSeg || 0)),
+      duracaoUltimaSeg: ultima ? ultima.duracaoSeg || 0 : null,
+      mediaCapturaSeg: todosOsTempos.length ? somar(todosOsTempos) / todosOsTempos.length : null,
+      ultimaAtividade: ultima ? new Date(ultima.fim || ultima.inicio) : null,
+      relatos,
+      ultimoBemEstar,
+      // Para ordenar a coluna "Bem-estar": 0 = bem … 2 = com dificuldade.
+      ordemBemEstar: ultimoBemEstar === null ? null : WELLBEING_OPTIONS.findIndex((o) => o.id === ultimoBemEstar),
+    };
+  }
+
+  function media(lista) { return somar(lista) / lista.length; }
+
+  // [NÍVEL] A sessão tem o registro de nível? (As antigas não têm.)
+  function temNivel(sessao) {
+    return Number.isFinite(sessao.nivelInicial) && Number.isFinite(sessao.nivelFinal) && Number.isFinite(sessao.nivelMaximo);
+  }
+
+  // Começo da semana (segunda-feira, 0h) de uma data.
+  function inicioDaSemana(data) {
+    const d = new Date(data.getFullYear(), data.getMonth(), data.getDate());
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+    return d;
+  }
+
+  // Separa as sessões nas últimas CHART_WEEKS semanas (da mais antiga para esta).
+  function agruparPorSemana(sessoes) {
+    const estaSemana = inicioDaSemana(new Date());
+    const semanas = [];
+    for (let i = CHART_WEEKS - 1; i >= 0; i--) {
+      const inicio = new Date(estaSemana); inicio.setDate(inicio.getDate() - 7 * i);
+      const fim = new Date(inicio); fim.setDate(fim.getDate() + 7);
+      semanas.push({ inicio, fim, sessoes: [] });
+    }
+    for (const s of sessoes) {
+      const quando = new Date(s.inicio);
+      const semana = semanas.find((w) => quando >= w.inicio && quando < w.fim);
+      if (semana) semana.sessoes.push(s);
+    }
+    return semanas;
+  }
+
+  /* ==========================================================================
+     AVISOS SUTIS — o que merece um olhar mais de perto
+     São contas simples sobre o que o paciente relatou e sobre a frequência.
+     Servem para puxar conversa; não são diagnóstico.
+     ========================================================================== */
+  function calcularAvisos() {
+    const avisos = [];
+    for (const r of resumos) {
+      // 1. Dor ou dificuldade repetidas nas últimas sessões.
+      const ultimos = r.relatos.slice(0, ALERT_LAST_SESSIONS);
+      const comAtencao = ultimos.filter((x) => WELLBEING_OPTIONS.find((o) => o.id === x.id).atencao);
+      if (comAtencao.length >= ALERT_MIN_REPORTS) {
+        const tipos = new Set(comAtencao.map((x) => x.id));
+        const oQue = tipos.size > 1 ? 'dor ou dificuldade' : tipos.has('dor') ? 'dor' : 'dificuldade';
+        avisos.push({ id: r.id, texto: `${r.nome} relatou ${oQue} em ${comAtencao.length} das últimas ${ultimos.length} sessões.` });
+      }
+      // 2. Muito tempo sem se movimentar.
+      if (r.ultimaAtividade && diasDesde(r.ultimaAtividade) > INACTIVITY_ALERT_DAYS) {
+        avisos.push({ id: r.id, texto: `${r.nome} não se movimenta há ${diasDesde(r.ultimaAtividade)} dias. Um recado de incentivo pode ajudar.` });
+      }
+    }
+    return avisos;
+  }
+
+  /* --------------------------------------------------------------------------
+     gerarLeituras — frases curtas que dizem o que os números podem significar.
+     Mude as frases e os limites aqui. Regra: sempre "indicativo", "sinal",
+     "pode valer" — nunca uma conclusão clínica.
+     -------------------------------------------------------------------------- */
+  function gerarLeituras(r) {
+    if (!r.totalSessoes) return ['Ainda não há sessões. Quando a pessoa se movimentar, as leituras aparecem aqui.'];
+    const frases = [];
+
+    // 1. O que uma captura representa.
+    if (r.capturas > 0) {
+      frases.push(`Segurou o boneco por ${HOLD_SECONDS} s em ${formatoNumero.format(r.capturas)} ` +
+        `${r.capturas === 1 ? 'ocasião' : 'ocasiões'} — bom indicativo de coordenação e atenção sustentada.`);
+    } else {
+      frases.push('Ainda não conseguiu segurar o boneco. Vale observar junto, com calma: a amplitude ou a velocidade podem precisar de ajuste.');
+    }
+
+    // 2. Tendência: tempo por captura nas primeiras sessões × nas últimas.
+    // [NÍVEL] Como o jogo fica mais difícil conforme a pessoa avança, o tempo
+    // por captura só pode ser comparado sabendo o nível de cada época.
+    const comMedia = r.sessoes.filter((s) => mediaDaSessao(s) !== null);
+    const medias = comMedia.map(mediaDaSessao);
+    if (medias.length >= 4) {
+      const n = Math.min(3, Math.floor(medias.length / 2));
+      const antes = media(medias.slice(0, n)), agora = media(medias.slice(-n));
+      const variacao = (agora - antes) / antes;
+      // Nível médio alcançado nos dois grupos (quando há esse registro).
+      const niveisAntes = comMedia.slice(0, n).filter(temNivel).map((s) => s.nivelMaximo);
+      const niveisAgora = comMedia.slice(-n).filter(temNivel).map((s) => s.nivelMaximo);
+      const nivelAntes = niveisAntes.length ? Math.round(media(niveisAntes)) : null;
+      const nivelAgora = niveisAgora.length ? Math.round(media(niveisAgora)) : null;
+      const ficouMaisDificil = nivelAntes !== null && nivelAgora !== null && nivelAgora > nivelAntes;
+
+      if (ficouMaisDificil && variacao <= -0.15) {
+        frases.push(`O tempo para segurar o boneco caiu de ${formatarDuracao(antes)} para ${formatarDuracao(agora)}, mesmo com a atividade mais difícil (do nível ${nivelAntes} para o ${nivelAgora}) — ótimo sinal.`);
+      } else if (ficouMaisDificil && variacao >= 0.15) {
+        frases.push(`O tempo para segurar o boneco subiu de ${formatarDuracao(antes)} para ${formatarDuracao(agora)}, mas a atividade também ficou mais difícil (do nível ${nivelAntes} para o ${nivelAgora}) — é esperado.`);
+      } else if (ficouMaisDificil) {
+        frases.push(`O tempo para segurar o boneco segue em torno de ${formatarDuracao(agora)}, com a atividade mais difícil (do nível ${nivelAntes} para o ${nivelAgora}) — bom sinal.`);
+      } else if (variacao <= -0.15) {
+        frases.push(`O tempo para segurar o boneco caiu de ${formatarDuracao(antes)} para ${formatarDuracao(agora)} — sinal de que o movimento está ficando mais fácil.`);
+      } else if (variacao >= 0.15) {
+        frases.push(`O tempo para segurar o boneco subiu de ${formatarDuracao(antes)} para ${formatarDuracao(agora)} — pode valer conversar sobre cansaço ou dor.`);
+      } else {
+        frases.push(`O tempo para segurar o boneco está estável, em torno de ${formatarDuracao(agora)}.`);
+      }
+    }
+
+    // 3. Regularidade (presença conta mais que desempenho).
+    const nestaSemana = r.sessoes.filter((s) => diasDesde(new Date(s.inicio)) < 7).length;
+    if (nestaSemana >= 3) frases.push(`Fez ${nestaSemana} sessões nos últimos 7 dias — ótima regularidade.`);
+    else if (nestaSemana >= 1) frases.push(`Fez ${nestaSemana} ${nestaSemana === 1 ? 'sessão' : 'sessões'} nos últimos 7 dias.`);
+    else frases.push('Não se movimentou nos últimos 7 dias — um recado de incentivo pode ajudar.');
+
+    // 4. Bem-estar relatado.
+    const ultimos = r.relatos.slice(0, ALERT_LAST_SESSIONS);
+    if (ultimos.length) {
+      const comAtencao = ultimos.filter((x) => x.id !== 'bem').length;
+      frases.push(comAtencao === 0
+        ? 'Tem dito que está bem nas últimas sessões.'
+        : `Relatou dor ou dificuldade em ${comAtencao} das últimas ${ultimos.length} ${ultimos.length === 1 ? 'sessão' : 'sessões'}.`);
+    }
+    return frases;
+  }
+
+  function mediaDaSessao(sessao) {
+    const t = Array.isArray(sessao.temposCaptura) ? sessao.temposCaptura : [];
+    return t.length ? somar(t) / t.length : null;
+  }
+
+  function somar(lista) { return lista.reduce((a, b) => a + b, 0); }
+
+  function diasDesde(data) {
+    const hoje = new Date();
+    const inicioHoje = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate());
+    const inicioData = new Date(data.getFullYear(), data.getMonth(), data.getDate());
+    return Math.round((inicioHoje - inicioData) / DIA_MS);
+  }
+
+  /* ==========================================================================
+     FORMATAÇÃO (datas e tempos em português)
+     ========================================================================== */
+  const formatoData = new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  const formatoHora = new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  const formatoDiaMes = new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit' });
+  const formatoNumero = new Intl.NumberFormat('pt-BR');
+
+  // 4520 → "1 h 15 min" · 512 → "8 min 32 s" · 18.4 → "18 s"
+  function formatarDuracao(segundos) {
+    if (segundos === null || segundos === undefined) return '—';
+    const total = Math.round(segundos);
+    const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), s = total % 60;
+    if (h > 0) return `${h} h ${String(m).padStart(2, '0')} min`;
+    if (m > 0) return `${m} min ${String(s).padStart(2, '0')} s`;
+    return `${s} s`;
+  }
+
+  function formatarDataHora(data) { return `${formatoData.format(data)} às ${formatoHora.format(data)}`; }
+
+  function formatarQuando(data) {
+    const dias = diasDesde(data);
+    if (dias <= 0) return 'hoje';
+    if (dias === 1) return 'ontem';
+    return `há ${dias} dias`;
+  }
+
+  function iniciais(nome) {
+    return nome.trim().split(/\s+/).slice(0, 2).map((p) => p[0]).join('').toUpperCase();
+  }
+
+  /* ==========================================================================
+     LOGIN
+     ★ BACKEND FUTURO: troque verificarLogin() por autenticação real, por
+     exemplo  await banco.auth.signInWithPassword({ email, password })  no
+     Supabase, ou  signInWithEmailAndPassword(auth, email, senha)  no Firebase.
+     A senha passa a ser conferida NO SERVIDOR e nunca fica neste arquivo.
+     ========================================================================== */
+  function verificarLogin(usuario, senha) {
+    return usuario.trim().toUpperCase() === ADMIN_USER.toUpperCase() && senha === ADMIN_PASSWORD;
+  }
+
+  function estaLogado() {
+    try { return sessionStorage.getItem(SESSION_KEY_AUTH) === '1'; }
+    catch (e) { return false; }
+  }
+
+  function mostrarLogin() {
+    pararSessaoAoVivo();           // fora do painel, nada de nomes no título da aba
+    $('painel').hidden = true;
+    $('tela-login').hidden = false;
+    $('login-erro').hidden = true;
+    $('form-login').reset();
+    $('login-usuario').focus();
+  }
+
+  async function mostrarPainel() {
+    $('tela-login').hidden = true;
+    $('painel').hidden = false;
+    $('usuario-logado').textContent = ADMIN_USER;
+    $('link-atividade').href = ACTIVITY_URL;
+    garantirDadosIniciais();
+    await carregarDados();
+    acompanharSessaoAoVivo();      // começa a escutar quem está jogando
+  }
+
+  $('form-login').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    if (verificarLogin($('login-usuario').value, $('login-senha').value)) {
+      try { sessionStorage.setItem(SESSION_KEY_AUTH, '1'); } catch (e) { /* segue sem lembrar */ }
+      mostrarPainel();
+    } else {
+      // Esconde e mostra de novo para o leitor de tela repetir a mensagem.
+      $('login-erro').hidden = true;
+      setTimeout(() => { $('login-erro').hidden = false; }, 30);
+      $('login-senha').value = '';
+      $('login-senha').focus();
+    }
+  });
+
+  $('botao-sair').addEventListener('click', () => {
+    try { sessionStorage.removeItem(SESSION_KEY_AUTH); } catch (e) { /* nada a limpar */ }
+    fecharDetalhe();
+    mostrarLogin();
+  });
+
+  /* ==========================================================================
+     PAINEL: carregar e desenhar
+     ========================================================================== */
+  let resumos = [];                 // um resumo por paciente
+  let ordenacao = { coluna: 'ultimaAtividade', direcao: 'desc' };
+  let pacienteAberto = null;        // id do paciente com o detalhe aberto
+  let grafico = null;               // instância do Chart.js
+  let recados = {};                 // recados por paciente (id → recado)
+  let recadoCarregadoPara = null;   // de quem é o recado que está no campo de texto
+
+  async function carregarDados() {
+    const [pacientes, sessoes, todosOsRecados] = await Promise.all([fetchPatients(), fetchSessions(), fetchMessages()]);
+    resumos = pacientes.map((p) => resumirPaciente(p, sessoes));
+    recados = todosOsRecados;
+
+    desenharResumo();
+    desenharAvisos();
+    desenharTabela();
+    const temExemplo = sessoes.some((s) => s.exemplo);
+    $('nota-exemplo').textContent = temExemplo
+      ? 'No momento há dados de exemplo (fictícios) misturados aos reais.'
+      : 'No momento não há dados de exemplo.';
+    $('botao-remover-exemplo').hidden = !temExemplo;
+    $('botao-restaurar-exemplo').hidden = temExemplo;
+    $('atualizado-em').textContent = `Atualizado em ${formatarDataHora(new Date())}`;
+
+    if (pacienteAberto && $('detalhe').open) desenharDetalhe();
+  }
+
+  // ---- Cartões de resumo ---------------------------------------------------
+  function desenharResumo() {
+    const totalSessoes = somar(resumos.map((r) => r.totalSessoes));
+    const totalCapturas = somar(resumos.map((r) => r.capturas));
+    const totalTempo = somar(resumos.map((r) => r.tempoTotalSeg));
+    const ativos = resumos.filter((r) => r.ultimaAtividade && diasDesde(r.ultimaAtividade) <= INACTIVITY_ALERT_DAYS).length;
+
+    $('res-pacientes').textContent = formatoNumero.format(resumos.length);
+    $('res-pacientes-apoio').textContent =
+      `${ativos} com atividade nos últimos ${INACTIVITY_ALERT_DAYS} dias`;
+
+    $('res-sessoes').textContent = formatoNumero.format(totalSessoes);
+    $('res-sessoes-apoio').textContent = `${formatoNumero.format(totalCapturas)} capturas no total`;
+
+    $('res-tempo').textContent = formatarDuracao(totalTempo);
+    $('res-tempo-apoio').textContent = totalSessoes
+      ? `média de ${formatarDuracao(totalTempo / totalSessoes)} por sessão` : 'nenhuma sessão ainda';
+
+    // Mais ativo = quem fez mais sessões (desempate: mais tempo de uso).
+    const maisAtivo = [...resumos].sort((a, b) =>
+      b.totalSessoes - a.totalSessoes || b.tempoTotalSeg - a.tempoTotalSeg)[0];
+    if (maisAtivo && maisAtivo.totalSessoes > 0) {
+      $('res-ativo').textContent = maisAtivo.nome;
+      $('res-ativo-apoio').textContent =
+        `${maisAtivo.totalSessoes} sessões · ${formatarDuracao(maisAtivo.tempoTotalSeg)}`;
+    } else {
+      $('res-ativo').textContent = '—';
+      $('res-ativo-apoio').textContent = 'nenhuma sessão ainda';
+    }
+  }
+
+  // ---- Avisos sutis --------------------------------------------------------
+  function desenharAvisos() {
+    const lista = $('lista-avisos');
+    lista.replaceChildren();
+    const avisos = calcularAvisos();
+    if (!avisos.length) {
+      const li = document.createElement('li');
+      li.className = 'tudo-bem';
+      li.innerHTML = '<span class="icone" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>';
+      const texto = document.createElement('span');
+      texto.className = 'texto';
+      texto.textContent = 'Nada pedindo atenção no momento.';
+      li.append(texto);
+      lista.append(li);
+      return;
+    }
+    for (const aviso of avisos) {
+      const li = document.createElement('li');
+      li.innerHTML = '<span class="icone" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 4.8v3.6M8 10.9v.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>';
+      const texto = document.createElement('span');
+      texto.className = 'texto';
+      texto.textContent = aviso.texto;
+      const botao = document.createElement('button');
+      botao.type = 'button';
+      botao.className = 'botao contorno';
+      botao.textContent = 'Ver histórico';
+      botao.addEventListener('click', () => abrirDetalhe(aviso.id));
+      li.append(texto, botao);
+      lista.append(li);
+    }
+  }
+
+  // Selo de bem-estar: rostinho + texto (o significado nunca fica só na cor).
+  function criarSeloBemEstar(id, complemento) {
+    const opcao = WELLBEING_OPTIONS.find((o) => o.id === id);
+    const selo = document.createElement('span');
+    if (!opcao) { selo.className = 'selo neutro'; selo.textContent = 'Sem resposta'; return selo; }
+    const classes = { bem: 'ok', dor: 'alerta', dificuldade: 'cuidado' };
+    const bocas = { bem: 'M5 9.5 Q8 12.5 11 9.5', dor: 'M5.5 10.5 H10.5', dificuldade: 'M5 11.5 Q8 8.8 11 11.5' };
+    selo.className = `selo ${classes[id] || 'neutro'}`;
+    selo.innerHTML = '<svg class="rosto" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/>' +
+      '<circle cx="5.8" cy="6.6" r=".9" fill="currentColor"/><circle cx="10.2" cy="6.6" r=".9" fill="currentColor"/>' +
+      `<path d="${bocas[id] || bocas.dor}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
+    const texto = document.createElement('span');
+    texto.textContent = complemento ? `${opcao.rotulo} · ${complemento}` : opcao.rotulo;
+    selo.append(texto);
+    return selo;
+  }
+
+  // ---- Tabela de pacientes -------------------------------------------------
+  // Cada coluna: chave (campo do resumo), título, se é numérica e, se for o
+  // caso, a classe que a esconde em telas estreitas (veja o CSS da tabela).
+  const COLUNAS = [
+    { chave: 'nome',             titulo: 'Paciente',          numerica: false },
+    { chave: 'totalSessoes',     titulo: 'Sessões',           numerica: true },
+    { chave: 'capturas',         titulo: 'Capturas',          numerica: true },
+    { chave: 'tempoTotalSeg',    titulo: 'Tempo total',       numerica: true, classe: 'col-opcional-2' },
+    { chave: 'duracaoUltimaSeg', titulo: 'Última sessão',     numerica: true, classe: 'col-opcional' },
+    { chave: 'mediaCapturaSeg',  titulo: 'Média por captura', numerica: true },
+    { chave: 'ordemBemEstar',    titulo: 'Bem-estar',         numerica: false },
+    { chave: 'ultimaAtividade',  titulo: 'Última atividade',  numerica: false },
+  ];
+
+  function montarCabecalhoDaTabela() {
+    const linha = $('cabecalho-tabela');
+    for (const coluna of COLUNAS) {
+      const th = document.createElement('th');
+      th.scope = 'col';
+      th.dataset.coluna = coluna.chave;
+      if (coluna.numerica) th.classList.add('num');
+      if (coluna.classe) th.classList.add(coluna.classe);   // coluna que some em telas estreitas
+      const botao = document.createElement('button');
+      botao.type = 'button';
+      botao.className = 'ordenar';
+      botao.append(coluna.titulo);
+      botao.insertAdjacentHTML('beforeend',
+        '<svg class="seta" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 2.5l4 6H2z" fill="currentColor"/></svg>');
+      botao.addEventListener('click', () => ordenarPor(coluna.chave));
+      th.append(botao);
+      linha.append(th);
+    }
+  }
+
+  function ordenarPor(chave) {
+    if (ordenacao.coluna === chave) {
+      ordenacao.direcao = ordenacao.direcao === 'asc' ? 'desc' : 'asc';
+    } else {
+      // Texto começa de A a Z; números e datas começam do maior/mais recente.
+      ordenacao = { coluna: chave, direcao: chave === 'nome' ? 'asc' : 'desc' };
+    }
+    desenharTabela();
+    const coluna = COLUNAS.find((c) => c.chave === chave);
+    $('anuncio').textContent =
+      `Tabela ordenada por ${coluna.titulo}, ordem ${ordenacao.direcao === 'asc' ? 'crescente' : 'decrescente'}.`;
+  }
+
+  function compararResumos(a, b) {
+    const chave = ordenacao.coluna;
+    const sinal = ordenacao.direcao === 'asc' ? 1 : -1;
+    const va = a[chave], vb = b[chave];
+    // Quem não tem dado (sem sessões) fica sempre no fim.
+    if (va === null && vb === null) return a.nome.localeCompare(b.nome, 'pt-BR');
+    if (va === null) return 1;
+    if (vb === null) return -1;
+    if (chave === 'nome') return sinal * va.localeCompare(vb, 'pt-BR');
+    return sinal * (va - vb) || a.nome.localeCompare(b.nome, 'pt-BR');
+  }
+
+  function desenharTabela() {
+    // Marca a coluna ordenada (aria-sort é lido pelos leitores de tela).
+    for (const th of $('cabecalho-tabela').children) {
+      th.setAttribute('aria-sort', th.dataset.coluna === ordenacao.coluna
+        ? (ordenacao.direcao === 'asc' ? 'ascending' : 'descending') : 'none');
+    }
+
+    const corpo = $('corpo-tabela');
+    corpo.replaceChildren();
+    if (!resumos.length) {
+      const tr = corpo.insertRow();
+      const td = tr.insertCell();
+      td.colSpan = COLUNAS.length;
+      td.className = 'vazio';
+      td.textContent = 'Nenhum paciente cadastrado.';
+      return;
+    }
+
+    for (const r of [...resumos].sort(compararResumos)) {
+      const tr = corpo.insertRow();
+      tr.addEventListener('click', () => abrirDetalhe(r.id));
+
+      // Paciente (o nome é um botão: funciona com Tab + Enter)
+      const tdNome = tr.insertCell();
+      const caixa = document.createElement('div');
+      caixa.className = 'celula-paciente';
+      const avatar = document.createElement('span');
+      avatar.className = 'avatar';
+      avatar.setAttribute('aria-hidden', 'true');
+      avatar.textContent = iniciais(r.nome);
+      const botao = document.createElement('button');
+      botao.type = 'button';
+      botao.className = 'link-paciente';
+      botao.textContent = r.nome;                    // textContent: nunca innerHTML com dados
+      botao.setAttribute('aria-label', `${r.nome}: ver histórico`);
+      caixa.append(avatar, botao);
+      tdNome.append(caixa);
+
+      celulaNumerica(tr, formatoNumero.format(r.totalSessoes));
+      celulaNumerica(tr, formatoNumero.format(r.capturas));
+      celulaNumerica(tr, r.totalSessoes ? formatarDuracao(r.tempoTotalSeg) : '—').classList.add('col-opcional-2');
+      celulaNumerica(tr, formatarDuracao(r.duracaoUltimaSeg)).classList.add('col-opcional');
+      celulaNumerica(tr, formatarDuracao(r.mediaCapturaSeg));
+
+      // Bem-estar: o que a pessoa disse na última vez
+      const tdBemEstar = tr.insertCell();
+      if (r.ultimoBemEstar) tdBemEstar.append(criarSeloBemEstar(r.ultimoBemEstar));
+      else tdBemEstar.textContent = '—';
+
+      // Última atividade: data + selo de situação
+      const tdUltima = tr.insertCell();
+      if (r.ultimaAtividade) {
+        const bloco = document.createElement('div');
+        bloco.className = 'ultima';
+        const linha1 = document.createElement('span');
+        linha1.textContent = formatarDataHora(r.ultimaAtividade);
+        const linha2 = document.createElement('span');
+        linha2.className = 'quando';
+        linha2.append(criarSelo(r));
+        bloco.append(linha1, linha2);
+        tdUltima.append(bloco);
+      } else {
+        tdUltima.append(criarSelo(r));
+      }
+    }
+  }
+
+  function celulaNumerica(tr, texto) {
+    const td = tr.insertCell();
+    td.className = 'num';
+    td.textContent = texto;
+    return td;
+  }
+
+  // Selo de situação: verde se jogou nos últimos dias; âmbar se está parado.
+  function criarSelo(r) {
+    const selo = document.createElement('span');
+    const texto = document.createElement('span');
+    if (!r.ultimaAtividade) {
+      selo.className = 'selo neutro';
+      selo.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+      texto.textContent = 'Ainda não jogou';
+    } else if (diasDesde(r.ultimaAtividade) <= INACTIVITY_ALERT_DAYS) {
+      selo.className = 'selo ok';
+      selo.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+      texto.textContent = `Ativo · ${formatarQuando(r.ultimaAtividade)}`;
+    } else {
+      selo.className = 'selo alerta';
+      selo.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5l6 10.5H2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M8 7v2.5M8 11.3v.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+      texto.textContent = `Sem atividade ${formatarQuando(r.ultimaAtividade)}`;
+    }
+    selo.append(texto);
+    return selo;
+  }
+
+  /* ==========================================================================
+     DETALHE DO PACIENTE (painel lateral com gráfico)
+     ========================================================================== */
+  // As três medidas que o gráfico sabe mostrar (uma de cada vez, um eixo só).
+  // "porSessao" calcula o valor de UMA sessão; "porSemana", o de uma lista de
+  // sessões da mesma semana (null = sem dado, o gráfico deixa um vão).
+  const MEDIDAS = {
+    capturas: {
+      legenda: { sessao: 'Capturas por sessão. Quanto mais, melhor.', semana: 'Capturas somadas por semana.' },
+      porSessao: (s) => s.capturas || 0,
+      porSemana: (lista) => somar(lista.map((s) => s.capturas || 0)),
+      texto: (v) => `${formatoNumero.format(v)} ${v === 1 ? 'captura' : 'capturas'}`,
+      eixo: (v) => formatoNumero.format(v),
+    },
+    media: {
+      legenda: {
+        sessao: 'Tempo médio para capturar o boneco, por sessão. Quanto menor, melhor.',
+        semana: 'Tempo médio para capturar o boneco, por semana. Quanto menor, melhor.',
+      },
+      porSessao: (s) => { const m = mediaDaSessao(s); return m === null ? null : Math.round(m * 10) / 10; },
+      porSemana: (lista) => {
+        const tempos = lista.flatMap((s) => Array.isArray(s.temposCaptura) ? s.temposCaptura : []);
+        return tempos.length ? Math.round(media(tempos) * 10) / 10 : null;
+      },
+      texto: (v) => `${formatarDuracao(v)} por captura`,
+      eixo: (v) => `${v} s`,
+    },
+    duracao: {
+      legenda: { sessao: 'Duração de cada sessão, em minutos.', semana: 'Tempo de uso somado por semana, em minutos.' },
+      porSessao: (s) => Math.round((s.duracaoSeg || 0) / 6) / 10,     // minutos, 1 casa
+      porSemana: (lista) => Math.round(somar(lista.map((s) => s.duracaoSeg || 0)) / 6) / 10,
+      texto: (v) => formatarDuracao(v * 60),
+      eixo: (v) => `${v} min`,
+    },
+  };
+
+  function abrirDetalhe(id) {
+    pacienteAberto = id;
+    desenharDetalhe();
+    if (!$('detalhe').open) {
+      $('detalhe').showModal();
+      $('detalhe-fechar').focus();     // o foco começa no botão de fechar
+    }
+  }
+
+  function desenharDetalhe() {
+    const r = resumos.find((x) => x.id === pacienteAberto);
+    if (!r) { fecharDetalhe(); return; }
+
+    $('detalhe-avatar').textContent = iniciais(r.nome);
+    $('detalhe-nome').textContent = r.nome;
+    $('detalhe-selo').replaceChildren(criarSelo(r));
+    $('det-sessoes').textContent = formatoNumero.format(r.totalSessoes);
+    $('det-capturas').textContent = formatoNumero.format(r.capturas);
+    $('det-tempo').textContent = r.totalSessoes ? formatarDuracao(r.tempoTotalSeg) : '—';
+    $('det-media').textContent = formatarDuracao(r.mediaCapturaSeg);
+
+    // Como disse que estava: os últimos relatos, com a data.
+    const tira = $('det-bem-estar');
+    tira.replaceChildren();
+    if (r.relatos.length) {
+      for (const relato of r.relatos.slice(0, 6)) tira.append(criarSeloBemEstar(relato.id, formatoDiaMes.format(relato.data)));
+    } else {
+      tira.textContent = 'Ainda não respondeu.';
+    }
+
+    // [NÍVEL] Nível de dificuldade na última sessão que tem esse registro.
+    const comNivel = r.sessoes.filter(temNivel);
+    const ultimaComNivel = comNivel[comNivel.length - 1];
+    $('det-nivel').hidden = !ultimaComNivel;
+    if (ultimaComNivel) {
+      const { nivelInicial, nivelFinal, nivelMaximo } = ultimaComNivel;
+      $('det-nivel').textContent =
+        `Nível da atividade na última sessão: começou em ${nivelInicial} e terminou em ${nivelFinal}` +
+        (nivelMaximo > nivelFinal ? ` (chegou ao ${nivelMaximo}).` : '.') +
+        ' O jogo começa fácil e sobe aos poucos, de 1 a 10.';
+    }
+
+    // O que os números sugerem.
+    const leituras = $('lista-leitura');
+    leituras.replaceChildren();
+    for (const frase of gerarLeituras(r)) {
+      const li = document.createElement('li');
+      li.textContent = frase;
+      leituras.append(li);
+    }
+
+    desenharGrafico(r);
+    desenharRecado(r);
+    desenharListaDeSessoes(r.sessoes.slice(-CHART_MAX_SESSIONS));
+  }
+
+  // Gráfico: barras por sessão OU linha por semana (um eixo só, uma medida de cada vez).
+  function desenharGrafico(r) {
+    const medida = MEDIDAS[document.querySelector('input[name="medida"]:checked').value];
+    const porSemana = document.querySelector('input[name="periodo"]:checked').value === 'semana';
+    const semDados = r.sessoes.length === 0;
+    const semBiblioteca = typeof Chart === 'undefined';
+
+    // Monta os pontos: rótulo do eixo, título do balão e valor.
+    let pontos;
+    if (porSemana) {
+      pontos = agruparPorSemana(r.sessoes).map((semana) => {
+        const ultimoDia = new Date(semana.fim); ultimoDia.setDate(ultimoDia.getDate() - 1);
+        return {
+          rotulo: formatoDiaMes.format(semana.inicio),
+          titulo: `Semana de ${formatoDiaMes.format(semana.inicio)} a ${formatoDiaMes.format(ultimoDia)}`,
+          valor: semana.sessoes.length ? medida.porSemana(semana.sessoes) : (medida === MEDIDAS.media ? null : 0),
+        };
+      });
+    } else {
+      pontos = r.sessoes.slice(-CHART_MAX_SESSIONS).map((s) => ({
+        rotulo: formatoDiaMes.format(new Date(s.inicio)),
+        titulo: formatarDataHora(new Date(s.inicio)),
+        valor: medida.porSessao(s),
+      }));
+    }
+
+    if (grafico) { grafico.destroy(); grafico = null; }
+    $('area-grafico').hidden = semDados || semBiblioteca;
+    $('sem-grafico').hidden = !(semDados || semBiblioteca);
+    $('grafico-legenda').textContent = semDados ? '' : porSemana
+      ? `${medida.legenda.semana} Últimas ${CHART_WEEKS} semanas, de segunda a domingo. O último ponto é a semana atual, ainda em andamento.`
+      : `${medida.legenda.sessao} ${pontos.length === 1 ? 'Última sessão.' : `Últimas ${pontos.length} sessões.`}`;
+    // Os mesmos números em texto, para quem usa leitor de tela.
+    $('grafico-resumo').textContent = semDados ? '' :
+      pontos.map((p) => `${p.titulo}: ${p.valor === null ? 'sem capturas' : medida.texto(p.valor)}`).join('; ') + '.';
+    if (semDados) { $('sem-grafico').textContent = 'Esta pessoa ainda não fez nenhuma sessão.'; return; }
+    if (semBiblioteca) {
+      $('sem-grafico').textContent = 'O gráfico não pôde ser carregado (sem internet). Os números estão na lista abaixo.';
+      return;
+    }
+
+    const serie = porSemana
+      ? {                                           // LINHA: 2 px, pontos com anel branco
+          data: pontos.map((p) => p.valor),
+          borderColor: CHART_COLOR, borderWidth: 2, tension: 0.25, spanGaps: false,
+          pointRadius: 4, pointHoverRadius: 6,
+          pointBackgroundColor: CHART_COLOR, pointBorderColor: '#FFFFFF', pointBorderWidth: 2,
+          fill: true, backgroundColor: 'rgba(42, 120, 214, .10)',
+        }
+      : {                                           // BARRAS: finas, ponta arredondada, base reta
+          data: pontos.map((p) => p.valor),
+          backgroundColor: CHART_COLOR, hoverBackgroundColor: CHART_COLOR_HOVER,
+          maxBarThickness: 24, borderRadius: { topLeft: 4, topRight: 4 }, borderSkipped: 'bottom',
+        };
+
+    const movimentoReduzido = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    grafico = new Chart($('grafico'), {
+      type: porSemana ? 'line' : 'bar',
+      data: { labels: pontos.map((p) => p.rotulo), datasets: [serie] },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: movimentoReduzido ? false : { duration: 250 },
+        interaction: { mode: 'index', intersect: false },   // alvo de toque maior que a marca
+        plugins: {
+          legend: { display: false },                       // uma série só: o título já diz o que é
+          tooltip: {
+            displayColors: false,
+            backgroundColor: '#2B2F36',
+            padding: 10,
+            titleFont: { weight: '400', size: 12 },
+            bodyFont: { weight: '600', size: 14 },
+            callbacks: {
+              title: (itens) => pontos[itens[0].dataIndex].titulo,
+              label: (item) => item.raw === null ? 'Sem capturas' : medida.texto(item.raw),
+            },
+          },
+        },
+        scales: {
+          x: {
+            grid: { display: false },
+            border: { color: '#CFC8BD' },
+            ticks: { color: '#676D76', font: { size: 11 }, maxRotation: 0, autoSkipPadding: 8 },
+          },
+          y: {
+            beginAtZero: true,
+            border: { display: false },
+            grid: { color: '#ECE8E1', drawTicks: false },   // linhas finas e discretas
+            ticks: { color: '#676D76', font: { size: 11 }, padding: 8, maxTicksLimit: 5, precision: 0, callback: medida.eixo },
+          },
+        },
+      },
+    });
+  }
+
+  // ---- Recado para o paciente ----------------------------------------------
+  function desenharRecado(r) {
+    const recado = recados[r.id] || null;
+    $('recado-autor').textContent = PROFESSIONAL_NAME;
+    // Só preenche o campo ao abrir OUTRO paciente (não apaga o que está sendo digitado).
+    if (recadoCarregadoPara !== r.id) {
+      $('recado-campo').value = recado ? recado.texto : '';
+      recadoCarregadoPara = r.id;
+    }
+    $('recado-estado').textContent = !recado ? 'Nenhum recado no momento.'
+      : recado.vistoEm ? `Visto por ${r.nome} em ${formatarDataHora(new Date(recado.vistoEm))}.`
+      : `Ainda não foi visto por ${r.nome}.`;
+    $('recado-apagar').hidden = !recado;
+    atualizarContagemDoRecado();
+  }
+
+  function atualizarContagemDoRecado() {
+    const tamanho = $('recado-campo').value.length;
+    $('recado-contagem').textContent = `${tamanho}/${MESSAGE_MAX_LENGTH}`;
+    $('recado-salvar').disabled = $('recado-campo').value.trim().length === 0;
+  }
+
+  async function salvarRecado() {
+    const texto = $('recado-campo').value.trim().slice(0, MESSAGE_MAX_LENGTH);
+    if (!texto || !pacienteAberto) return;
+    await saveMessage(pacienteAberto, {
+      texto,
+      autor: PROFESSIONAL_NAME,
+      criadoEm: new Date().toISOString(),
+      vistoEm: null,                 // o jogo preenche quando o paciente vir
+    });
+    recadoCarregadoPara = null;      // recarrega o campo com o texto salvo
+    await carregarDados();
+    $('anuncio').textContent = 'Recado salvo.';
+  }
+
+  async function apagarRecado() {
+    if (!pacienteAberto) return;
+    await deleteMessage(pacienteAberto);
+    recadoCarregadoPara = null;
+    await carregarDados();
+    $('anuncio').textContent = 'Recado apagado.';
+  }
+
+  // A lista traz os mesmos números do gráfico (para quem não usa o mouse).
+  function desenharListaDeSessoes(sessoes) {
+    const corpo = $('corpo-sessoes');
+    corpo.replaceChildren();
+    if (!sessoes.length) {
+      const td = corpo.insertRow().insertCell();
+      td.colSpan = 5;
+      td.className = 'vazio';
+      td.textContent = 'Nenhuma sessão registrada.';
+      return;
+    }
+    for (const s of [...sessoes].reverse()) {             // mais nova primeiro
+      const tr = corpo.insertRow();
+      const tdData = tr.insertCell();
+      const quando = new Date(s.inicio);
+      tdData.textContent = `${formatoDiaMes.format(quando)} às ${formatoHora.format(quando)}`;
+      tdData.title = formatarDataHora(quando);            // data completa ao passar o mouse
+      if (s.exemplo) tdData.append(criarEtiqueta('exemplo'));
+      if (s.modo === 'mouse') tdData.append(criarEtiqueta('mouse'));
+      if (temNivel(s)) tdData.append(criarEtiqueta(`nível ${s.nivelInicial} → ${s.nivelFinal}`));   // [NÍVEL]
+      const tdBemEstar = tr.insertCell();
+      if (s.bemEstar) tdBemEstar.append(criarSeloBemEstar(s.bemEstar));
+      else tdBemEstar.textContent = '—';
+      celulaNumerica(tr, formatarDuracao(s.duracaoSeg || 0));
+      celulaNumerica(tr, formatoNumero.format(s.capturas || 0));
+      celulaNumerica(tr, formatarDuracao(mediaDaSessao(s)));
+    }
+  }
+
+  function criarEtiqueta(texto) {
+    const e = document.createElement('span');
+    e.className = 'etiqueta';
+    e.textContent = texto;
+    return e;
+  }
+
+  /* ==========================================================================
+     SESSÃO AO VIVO — quem está jogando agora
+
+     COMO A INFORMAÇÃO CHEGA DO JOGO ATÉ AQUI (as duas páginas abertas no
+     mesmo navegador, em abas ou janelas diferentes):
+       O jogo grava a sessão em localStorage[ACTIVE_SESSION_KEY] e renova o
+       campo "lastSeen" a cada HEARTBEAT_INTERVAL_MS (o "batimento").
+       O painel fica sabendo das mudanças por três caminhos:
+         1. BroadcastChannel — aviso instantâneo entre abas (o preferido).
+         2. Evento "storage" — o navegador avisa quando outra aba muda o
+            localStorage (reserva, para onde não há BroadcastChannel).
+         3. Consulta periódica — a cada HEARTBEAT_INTERVAL_MS o painel relê
+            o localStorage (última reserva; pega qualquer aviso perdido).
+       Os avisos 1 e 2 só "acordam" o painel: o dado é sempre lido do
+       localStorage, que é a fonte da verdade.
+
+     E SE A ABA DO JOGO FECHAR DE REPENTE?
+       Os batimentos param. Quando "lastSeen" fica mais velho que
+       SESSION_TIMEOUT_MS, o painel considera a sessão encerrada e limpa o
+       cartão (e apaga o registro vencido).
+     ========================================================================== */
+  let aoVivo = null;                // sessão ao vivo mostrada no momento (ou null)
+  let cancelarAoVivo = null;        // função que desliga a escuta
+  let timerRelogio = 0;
+
+  // Lê a sessão ao vivo. Devolve null se não houver, se estiver malformada ou
+  // se o último batimento for antigo demais (aba do jogo fechou de repente).
+  function lerSessaoAoVivo() {
+    const s = lerJson(ACTIVE_SESSION_KEY);
+    if (!s || typeof s.playerName !== 'string' || !Number.isFinite(s.startedAt) || !Number.isFinite(s.lastSeen)) {
+      return null;
+    }
+    if (Date.now() - s.lastSeen > SESSION_TIMEOUT_MS) {
+      try { localStorage.removeItem(ACTIVE_SESSION_KEY); } catch (e) { /* sem localStorage */ }
+      return null;
+    }
+    return s;
+  }
+
+  /* --------------------------------------------------------------------------
+     subscribeLiveSession — chama aoMudar(sessao ou null) sempre que a sessão
+     ao vivo puder ter mudado. Devolve uma função que desliga tudo.
+
+     ★ BACKEND FUTURO: para ver a sessão ao vivo de OUTRO aparelho (celular
+     ou tablet do profissional), troque o corpo desta função. Exemplos:
+
+       WebSocket próprio:
+         const socket = new WebSocket('wss://SEU-SERVIDOR/ao-vivo');
+         socket.onmessage = (ev) => aoMudar(JSON.parse(ev.data).sessao);
+         return () => socket.close();
+
+       Supabase Realtime (Presence — o servidor avisa quando alguém entra e
+       sai, então o batimento e o SESSION_TIMEOUT_MS deixam de ser precisos):
+         const canal = banco.channel('ao-vivo');
+         canal.on('presence', { event: 'sync' }, () => {
+           const presentes = Object.values(canal.presenceState()).flat();
+           aoMudar(presentes[0] || null);
+         }).subscribe();
+         return () => banco.removeChannel(canal);
+
+     No index.html, a função equivalente é publishLiveSession().
+     -------------------------------------------------------------------------- */
+  function subscribeLiveSession(aoMudar) {
+    const reler = () => aoMudar(lerSessaoAoVivo());
+
+    // Caminho 1: BroadcastChannel (aviso instantâneo, quando o navegador tem).
+    let canal = null;
+    if ('BroadcastChannel' in window) {
+      canal = new BroadcastChannel(LIVE_CHANNEL_NAME);
+      canal.onmessage = reler;
+    }
+
+    // Caminho 2: evento "storage" (outra aba mudou o localStorage).
+    // ev.key === null significa "o localStorage inteiro foi limpo".
+    const aoMudarStorage = (ev) => { if (ev.key === ACTIVE_SESSION_KEY || ev.key === null) reler(); };
+    window.addEventListener('storage', aoMudarStorage);
+
+    // Caminho 3: consulta periódica (pega avisos perdidos e sessões vencidas).
+    const timer = setInterval(reler, HEARTBEAT_INTERVAL_MS);
+
+    reler();                        // estado inicial, sem esperar o primeiro aviso
+    return () => {
+      if (canal) canal.close();
+      window.removeEventListener('storage', aoMudarStorage);
+      clearInterval(timer);
+    };
+  }
+
+  function acompanharSessaoAoVivo() {
+    pararSessaoAoVivo();
+    cancelarAoVivo = subscribeLiveSession(mostrarSessaoAoVivo);
+    // O relógio anda de segundo em segundo, sem depender dos avisos.
+    timerRelogio = setInterval(atualizarRelogioAoVivo, 1000);
+  }
+
+  function pararSessaoAoVivo() {
+    if (cancelarAoVivo) { cancelarAoVivo(); cancelarAoVivo = null; }
+    clearInterval(timerRelogio);
+    aoVivo = null;
+    document.title = PAGE_TITLE;
+  }
+
+  // Desenha o cartão do topo e o título da aba.
+  function mostrarSessaoAoVivo(sessao) {
+    const anterior = aoVivo;
+    aoVivo = sessao;
+    const ativo = sessao !== null;
+
+    $('ao-vivo').classList.toggle('ativo', ativo);
+    $('ao-vivo-titulo').textContent = ativo ? 'Sessão ao vivo agora' : 'Sessão ao vivo';
+    $('ao-vivo-vazio').hidden = ativo;
+    $('ao-vivo-conteudo').hidden = !ativo;
+    document.title = ativo ? `Painel do Profissional — ${sessao.playerName} ao vivo` : PAGE_TITLE;
+
+    if (ativo) {
+      const capturas = sessao.captures || 0;
+      $('ao-vivo-nome').textContent = sessao.playerName;        // textContent: o nome é digitado pelo usuário
+      $('ao-vivo-detalhe').textContent =
+        `Iniciada às ${formatoHora.format(new Date(sessao.startedAt))} — ` +
+        `${formatoNumero.format(capturas)} ${capturas === 1 ? 'captura' : 'capturas'} nesta sessão` +
+        (Number.isFinite(sessao.level) ? ` · nível ${sessao.level}` : '');   // [NÍVEL]
+
+      // Selo: paciente cadastrado (entra no histórico) ou visitante (não entra).
+      const selo = document.createElement('span');
+      selo.className = sessao.isRegisteredPatient ? 'selo ok' : 'selo neutro';
+      selo.textContent = sessao.isRegisteredPatient
+        ? 'Paciente cadastrado · entra no histórico'
+        : 'Visitante · não entra no histórico';
+      $('ao-vivo-tipo').replaceChildren(selo);
+      // Como a pessoa disse que está hoje (se respondeu).
+      if (sessao.wellbeing) $('ao-vivo-tipo').append(' ', criarSeloBemEstar(sessao.wellbeing, 'hoje'));
+
+      const temHistorico = sessao.isRegisteredPatient && resumos.some((r) => r.id === sessao.patientId);
+      $('ao-vivo-historico').hidden = !temHistorico;
+      atualizarRelogioAoVivo();
+    }
+
+    // Avisa o leitor de tela só quando alguém entra ou sai (não a cada batimento).
+    const idAntes = anterior ? anterior.sessionId : null;
+    const idAgora = sessao ? sessao.sessionId : null;
+    if (idAntes !== idAgora) {
+      $('anuncio').textContent = sessao
+        ? `Sessão ao vivo iniciada: ${sessao.playerName}.`
+        : 'Sessão ao vivo encerrada.';
+    }
+  }
+
+  // "02:15" (ou "1:02:15" depois de uma hora).
+  function formatarRelogio(ms) {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), s = total % 60;
+    const mmss = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    return h > 0 ? `${h}:${mmss}` : mmss;
+  }
+
+  function atualizarRelogioAoVivo() {
+    if (!aoVivo) return;
+    // Batimento vencido? Limpa já, sem esperar a próxima consulta.
+    if (Date.now() - aoVivo.lastSeen > SESSION_TIMEOUT_MS) { mostrarSessaoAoVivo(lerSessaoAoVivo()); return; }
+    $('ao-vivo-relogio').textContent = formatarRelogio(Date.now() - aoVivo.startedAt);
+  }
+
+  /* ==========================================================================
+     LIGANDO OS BOTÕES E EVENTOS
+     ========================================================================== */
+  $('ao-vivo-historico').addEventListener('click', () => {
+    if (aoVivo && aoVivo.patientId) abrirDetalhe(aoVivo.patientId);
+  });
+
+  $('botao-atualizar').addEventListener('click', async () => {
+    await carregarDados();
+    $('anuncio').textContent = 'Dados atualizados.';
+  });
+
+  $('botao-remover-exemplo').addEventListener('click', async () => {
+    removerExemplo();
+    await carregarDados();
+    $('anuncio').textContent = 'Dados de exemplo removidos.';
+    $('botao-restaurar-exemplo').focus();
+  });
+
+  $('botao-restaurar-exemplo').addEventListener('click', async () => {
+    restaurarExemplo();
+    await carregarDados();
+    $('anuncio').textContent = 'Dados de exemplo restaurados.';
+    $('botao-remover-exemplo').focus();
+  });
+
+  // Detalhe: fechar pelo botão, pela tecla Esc (nativo) ou clicando fora.
+  function fecharDetalhe() {
+    if ($('detalhe').open) $('detalhe').close();
+    pacienteAberto = null;
+    recadoCarregadoPara = null;
+    if (grafico) { grafico.destroy(); grafico = null; }
+  }
+  $('detalhe-fechar').addEventListener('click', fecharDetalhe);
+  $('detalhe').addEventListener('click', (ev) => { if (ev.target === $('detalhe')) fecharDetalhe(); });
+  // Tecla Esc: o navegador fecha sozinho e avisa por este evento.
+  $('detalhe').addEventListener('close', () => { if (!$('detalhe').open) fecharDetalhe(); });
+  for (const radio of document.querySelectorAll('input[name="medida"], input[name="periodo"]')) {
+    radio.addEventListener('change', () => { if (pacienteAberto) desenharDetalhe(); });
+  }
+
+  // Recado para o paciente.
+  $('recado-campo').maxLength = MESSAGE_MAX_LENGTH;
+  $('recado-campo').addEventListener('input', atualizarContagemDoRecado);
+  $('recado-salvar').addEventListener('click', salvarRecado);
+  $('recado-apagar').addEventListener('click', apagarRecado);
+
+  // Se o jogo gravar uma sessão em OUTRA aba, o painel se atualiza sozinho.
+  window.addEventListener('storage', (ev) => {
+    // (Inclui os recados: o jogo marca "visto" quando o paciente lê.)
+    const chaves = [STORAGE_KEY_SESSIONS, STORAGE_KEY_PATIENTS, STORAGE_KEY_MESSAGES];
+    if (chaves.includes(ev.key) && estaLogado()) carregarDados();
+  });
+
+  /* ==========================================================================
+     INÍCIO
+     ========================================================================== */
+  for (const el of document.querySelectorAll('.nome-produto')) el.textContent = PRODUCT_NAME;
+  $('dica-segundos').textContent = HOLD_SECONDS;
+  montarCabecalhoDaTabela();
+  if (estaLogado()) mostrarPainel(); else mostrarLogin();
+  </script>
+</body>
+</html>

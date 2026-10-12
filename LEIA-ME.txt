@@ -1,0 +1,63 @@
+MOVIMENTO LEVE
+Atividade "Segure o bonequinho" + Painel do Profissional
+=========================================================
+
+O QUE TEM AQUI
+  index.html ........ o jogo, para a pessoa idosa (usa a webcam)
+  admin.html ........ o painel do profissional (login, histórico, sessão ao vivo)
+  guia-visual.html .. referência de cores, fontes, componentes e tom de voz
+  LEIA-ME.txt ....... este arquivo
+
+COMO RODAR
+  O navegador só libera a câmera em "localhost" ou em sites "https", então
+  não adianta abrir o arquivo com dois cliques. Faça assim:
+
+  1. Abra um terminal DENTRO desta pasta e rode:
+
+       python3 -m http.server 8000 --bind 127.0.0.1
+
+  2. No Chrome, Edge ou Firefox, abra:
+
+       Jogo ............ http://localhost:8000/index.html
+       Painel .......... http://localhost:8000/admin.html
+       Guia visual ..... http://localhost:8000/guia-visual.html
+
+  3. No jogo: diga o nome, responda como está se sentindo, toque em
+     "Começar atividade" e permita o uso da câmera.
+
+  4. No painel: entre com o usuário e a senha que estão nas constantes
+     ADMIN_USER e ADMIN_PASSWORD, no começo do admin.html.
+
+  Para ver a "Sessão ao vivo", deixe o jogo e o painel em DUAS JANELAS lado a
+  lado (não em duas abas da mesma janela).
+
+O QUE PRECISA
+  • Internet: o jogo baixa o modelo de visão (cerca de 15 MB na primeira vez),
+    as fontes e a biblioteca de gráficos.
+  • Webcam, boa luz vinda da frente e a pessoa a 1,5–2 m da câmera.
+  • Sem câmera? Na tela de erro há o botão "Jogar com o mouse".
+
+ONDE FICAM OS DADOS
+  Tudo fica no localStorage DESTE navegador, NESTE endereço. Jogo e painel
+  precisam ser abertos no mesmo navegador e no mesmo endereço (a porta conta:
+  localhost:8000 e localhost:8766 não enxergam os dados um do outro). Se o
+  histórico do navegador for limpo, os dados se perdem.
+  Na primeira vez, o painel cria dados de EXEMPLO (fictícios) para os quatro
+  pacientes; dá para removê-los no rodapé do painel.
+
+É UM PROTÓTIPO
+  • O login do painel não é segurança de verdade (a senha está no código).
+  • Os avisos e as "leituras" do painel são regras simples, sem validação
+    clínica. Não substituem a avaliação do profissional.
+  • Para usar o painel em outro aparelho é preciso um backend: procure por
+    "BACKEND FUTURO" nos dois arquivos.
+
+ONDE AJUSTAR
+  Dificuldade do jogo ... bloco "AJUSTE DE DIFICULDADE", no topo do index.html.
+                          Ela é adaptativa: começa no nível 1 (fácil) e sobe
+                          aos poucos, até o 10, conforme a pessoa joga.
+  Instruções escritas ... constante INSTRUCOES_ESCRITAS (index.html)
+  Textos do jogo ........ constante TEXTS (index.html)
+  Cores e fontes ........ bloco ":root" de cada arquivo
+  Pacientes ............. constante REGISTERED_PATIENTS (nos dois arquivos)
+  O resto ............... veja a última seção do guia-visual.html

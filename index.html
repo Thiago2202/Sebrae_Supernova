@@ -1,0 +1,3047 @@
+<!DOCTYPE html>
+<!--
+  ============================================================================
+  MOVIMENTO LEVE · Atividade: "Segure o bonequinho"
+  ----------------------------------------------------------------------------
+  Plataforma para estimular a mobilidade física de pessoas idosas.
+  Um boneco palito passeia devagar pela tela. A pessoa leva as mãos até ele
+  (rastreadas pela webcam) e segura por 3 segundos para ganhar um ponto.
+  Sem game over, sem tempo limite, sem perder pontos.
+
+  PAINEL DO PROFISSIONAL: antes de jogar, escolhe-se quem é o paciente. Cada
+  sessão é gravada no localStorage do navegador e aparece no admin.html (nesta
+  mesma pasta). Os trechos dessa ligação estão marcados com [PAINEL].
+
+  SESSÃO AO VIVO: a pessoa diz o nome antes de começar e, enquanto joga, o
+  painel mostra "Sessão ao vivo agora" com esse nome. Trechos marcados com
+  [AO VIVO].
+
+  INSTRUÇÕES POR ESCRITO: o cartão "Como funciona", abaixo do botão "Ouvir
+  instruções" (constante INSTRUCOES_ESCRITAS). Trechos marcados com [LER].
+
+  DIFICULDADE ADAPTATIVA: começa fácil e sobe aos poucos, por níveis. Tudo
+  o que dá para ajustar está no bloco "AJUSTE DE DIFICULDADE", logo abaixo.
+  Trechos marcados com [NÍVEL].
+
+  CAMADA ACOLHEDORA: saudação pelo nome e pelo horário, pergunta de bem-estar,
+  recado do profissional, instruções em áudio, pequenas vitórias e tela de
+  encerramento. Trechos marcados com [ACOLHER]. Onde ajustar cada coisa:
+    • CORES e FONTES ........ bloco ":root", no começo do <style>
+    • TEXTOS ................ constante TEXTS, logo abaixo
+    • OPÇÕES DE BEM-ESTAR ... constante WELLBEING_OPTIONS, logo abaixo
+    • NOME DO PRODUTO ....... constante PRODUCT_NAME, logo abaixo
+
+  COMO RODAR:
+    1. Abra um terminal nesta pasta e rode:  python3 -m http.server 8000
+    2. No navegador, acesse:                 http://localhost:8000
+    3. Clique em "Começar" e permita o uso da câmera.
+    (O navegador só libera a câmera em "localhost" ou em sites "https".)
+
+  BIBLIOTECA: MediaPipe Tasks Vision (PoseLandmarker), carregada por CDN.
+  Todo o processamento acontece no próprio computador.
+  ============================================================================
+-->
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Movimento Leve · Segure o bonequinho</title>
+  <meta name="description" content="Atividade de movimento para pessoas idosas: leve as mãos até o bonequinho e segure por 3 segundos, usando a câmera.">
+
+  <script>
+  /* ==========================================================================
+     ★★★ AJUSTE DE DIFICULDADE ★★★
+     [NÍVEL] A dificuldade é ADAPTATIVA: toda sessão começa fácil e vai subindo
+     aos poucos, conforme a pessoa joga. Ela é medida em NÍVEIS, de NIVEL_MIN
+     (o mais fácil) a NIVEL_MAX. Os trechos deste sistema estão marcados com
+     [NÍVEL] no arquivo.
+
+     ★ ONDE AJUSTAR
+       • O que muda de um nível para o outro ..... "O QUE CADA NÍVEL VALE"
+       • De quanto em quanto tempo o nível sobe .. "RITMO DA PROGRESSÃO"
+       • O que conta como "indo bem" ............. "COMO O JOGO PERCEBE A PESSOA"
+       • Comportamentos de liga/desliga .......... "ESCOLHAS"
+       • O que NÃO muda com o nível .............. "FIXOS"
+
+     COMO FICA CADA NÍVEL (com os valores abaixo)
+       Nível                     1      4      7     10
+       Velocidade (px/s)        18     32     46     60
+       Anda segurado (fator)   0,20   0,37   0,53   0,70
+       Raio de captura (px)    160    140    120    100
+       Amplitude horizontal    1,20   1,43   1,67   1,90
+       Amplitude vertical      1,05   1,23   1,42   1,60
+     (O jogo de antes, de dificuldade fixa, ficava perto do nível 4.)
+     ========================================================================== */
+
+  // ---- NÍVEIS ---------------------------------------------------------------
+  const NIVEL_MIN = 1;         // o mais fácil
+  const NIVEL_MAX = 10;        // o mais desafiador
+  const NIVEL_INICIAL = 1;     // toda sessão começa aqui, como um aquecimento
+
+  // ---- O QUE CADA NÍVEL VALE --------------------------------------------------
+  // Cada parâmetro tem dois valores: o do nível mais fácil (NIVEL_MIN) e o
+  // LIMITE SEGURO, que é o que ele vale no nível mais difícil (NIVEL_MAX).
+  // Nos níveis do meio o jogo usa um valor proporcional. Nenhum nível passa
+  // do limite seguro.
+
+  // Velocidade do boneco, em pixels por segundo. Mesmo o teto (60 px/s) é
+  // lento: leva uns 15 segundos para atravessar uma tela de notebook.
+  const STICK_FIGURE_SPEED = 18;              // no nível mais fácil
+  const LIMITE_SEGURO_VELOCIDADE = 60;        // TETO: nunca mais rápido que isto
+
+  // Enquanto a mão está em cima, o boneco anda mais devagar (facilita segurar).
+  // 0 = para totalmente · 0.2 = anda a 20% · 1 = não desacelera nada.
+  const HELD_SPEED_FACTOR = 0.2;              // no nível mais fácil
+  const LIMITE_SEGURO_FATOR_SEGURANDO = 0.7;  // TETO
+
+  // Raio da "área de captura" ao redor do boneco, em pixels. É maior que o
+  // desenho de propósito: a mão não precisa estar exatamente em cima.
+  const HOLD_RADIUS_PX = 160;                 // no nível mais fácil (bem generoso)
+  const LIMITE_SEGURO_RAIO = 100;             // PISO: nunca menor que isto
+
+  // AMPLITUDE: quanto a mão precisa se afastar do corpo para o cursor chegar
+  // na borda da tela, medido em "larguras de ombro". MAIOR = pede mais braço.
+  const REACH_HORIZONTAL = 1.2;               // no nível mais fácil
+  const LIMITE_SEGURO_ALCANCE_HORIZONTAL = 1.9;   // TETO
+  const REACH_VERTICAL = 1.05;                // no nível mais fácil
+  const LIMITE_SEGURO_ALCANCE_VERTICAL = 1.6;     // TETO
+
+  // ---- RITMO DA PROGRESSÃO ----------------------------------------------------
+  // De quantas em quantas capturas o jogo para e avalia como a pessoa está indo.
+  const AVALIAR_A_CADA_N_CAPTURAS = 3;
+  // A cada avaliação, uma "barrinha" invisível enche um pouco. Quando chega a
+  // 1, o nível sobe UM degrau (nunca mais que um por avaliação).
+  //   1    = sobe a cada avaliação
+  //   0.5  = sobe a cada 2 avaliações
+  //   0.25 = sobe a cada 4 avaliações
+  const RITMO_SUBIDA_NORMAL = 1;              // quando está indo bem
+  const RITMO_SUBIDA_MEIO_TERMO = 0.5;        // nem rápido nem lento
+  const RITMO_SUBIDA_COM_DIFICULDADE = 0.25;  // quando está com dificuldade
+  // Quanto tempo (ms) os valores levam para "deslizar" até os do novo nível.
+  // É o que deixa a mudança suave, sem tranco.
+  const TRANSICAO_DE_NIVEL_MS = 4000;
+
+  // ---- COMO O JOGO PERCEBE A PESSOA ---------------------------------------------
+  // A avaliação olha a média das últimas capturas.
+  const CAPTURAS_NA_MEDIA = 3;
+  // Tempo médio por captura (segundos, já contando os 3 s segurando):
+  const LIMIAR_RAPIDO_SEG = 15;               // abaixo disto → "indo bem"
+  const LIMIAR_LENTO_SEG = 35;                // acima disto → "com dificuldade"
+  const LIMIAR_MUITO_LENTO_SEG = 70;          // acima disto → "muita dificuldade"
+  // Vezes que a pessoa soltou o boneco antes de completar os 3 s, em média,
+  // por captura. Acima disto → "com dificuldade".
+  const LIMITE_SOLTADAS_POR_CAPTURA = 2;
+  // Sessão mais longa que isto (minutos) pode ser cansaço → progride devagar.
+  const SESSAO_LONGA_MIN = 12;
+  // Quem respondeu "um pouco de dor" ou "com dificuldade" na pergunta de
+  // bem-estar é tratado como "com dificuldade" desde o começo da sessão.
+
+  // ---- ESCOLHAS (true = ligado · false = desligado) --------------------------------
+  // Com dificuldade, o nível continua subindo (bem devagar)? Com false, ele
+  // fica parado enquanto a dificuldade durar.
+  const SUBIR_MESMO_COM_DIFICULDADE = true;
+  // Quem relatou dor ou dificuldade também passa a precisar de mais amplitude
+  // de braço quando o nível sobe? Com false (o padrão, mais cauteloso), só a
+  // velocidade e o raio mudam; a amplitude fica a do nível inicial.
+  const AMPLITUDE_SOBE_COM_DOR = false;
+  // Se a pessoa estiver com MUITA dificuldade, o nível pode descer um degrau,
+  // em silêncio? (Nunca abaixo do nível em que a sessão começou.)
+  const DESCER_SE_MUITA_DIFICULDADE = false;
+
+  // ---- FIXOS (não mudam com o nível) ------------------------------------------------
+
+  // Quão rápido o boneco muda de direção (graus por segundo).
+  // Menor = curvas mais abertas e suaves.
+  const STICK_FIGURE_TURN_RATE = 40;
+
+  // Tempo, em milissegundos, que a mão precisa ficar sobre o boneco.
+  // NÃO muda com o nível de propósito: é a medida que o painel do profissional
+  // compara de uma sessão para a outra.
+  const HOLD_DURATION_MS = 3000;
+
+  // Saídas rapidinhas (tremor) menores que isto não contam como "tirou a mão".
+  const HOLD_GRACE_MS = 350;
+
+  // Quando a pessoa tira a mão, o anel esvazia devagar neste tempo (ms).
+  // Sem punição: se voltar antes de esvaziar, continua de onde estava.
+  const HOLD_RESET_MS = 900;
+
+  // Suavização do cursor (0 a 1). MENOR = mais suave, absorve mais tremor,
+  // porém responde mais devagar. 0.12 é bem suave; 0.25 é mais "esperto".
+  const CURSOR_SMOOTHING = 0.12;
+
+  // Ignora tremidinhas menores que isto (fração da tela: 0.004 = 0,4%).
+  const CURSOR_DEAD_ZONE = 0.004;
+
+  // Como o cursor é calculado:
+  //  'pontoMedio' → ponto médio entre os dois punhos (as duas mãos juntas).
+  //  'maoMaisAlta' → só a mão que estiver levantada (mais alta).
+  // Se um punho não aparecer, usa o outro automaticamente.
+  const CURSOR_MODE = 'pontoMedio';
+
+  // Altura das mãos que corresponde ao MEIO da tela
+  // (0 = altura dos ombros; 0.3 = um pouco abaixo, na altura do peito).
+  const REACH_VERTICAL_CENTER = 0.3;
+
+  // Tamanho do boneco: fração da altura da área de jogo.
+  const STICK_FIGURE_SIZE = 0.3;
+
+  // Volume dos sons (0 a 1). Baixinho, para não assustar.
+  const SOUND_VOLUME = 0.15;
+  </script>
+
+  <script>
+  /* ==========================================================================
+     [PAINEL] PACIENTES E REGISTRO DE SESSÕES
+     Tudo o que liga o jogo ao Painel do Profissional (admin.html) está marcado
+     com a etiqueta [PAINEL] neste arquivo. Procure por ela para achar cada
+     trecho.
+     ========================================================================== */
+
+  // Pacientes cadastrados. PRECISA ser igual à lista do admin.html.
+  // Para cadastrar mais um, acrescente o nome aqui E no admin.html.
+  const REGISTERED_PATIENTS = ['Thaís G', 'Durval J', 'P Ivone', 'Thiago A'];
+
+  // "  Thaís   g " → "thais g": sem acentos, sem maiúsculas, sem espaços
+  // sobrando. Serve para reconhecer um paciente mesmo se o nome for digitado
+  // de um jeito um pouco diferente.
+  function normalizarNome(nome) {
+    return String(nome).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase().trim().replace(/\s+/g, ' ');
+  }
+  // "Thaís G" → "thais-g". É por esse "id" que as sessões são guardadas.
+  function criarIdDoNome(nome) {
+    return normalizarNome(nome).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  }
+  // (Gerado sozinho a partir da lista acima.)
+  const DEFAULT_PATIENTS = REGISTERED_PATIENTS.map((nome) => ({ id: criarIdDoNome(nome), nome }));
+
+  // Chaves do localStorage. PRECISAM ser iguais às do admin.html.
+  const STORAGE_KEY_PATIENTS = 'movimentese.pacientes';
+  const STORAGE_KEY_SESSIONS = 'movimentese.sessoes';
+
+  // Nome desta atividade nos registros (útil quando houver outras atividades).
+  const ACTIVITY_ID = 'segure-o-boneco';
+  // Sessões sem nenhuma captura e mais curtas que isto não são gravadas
+  // (ex.: abriu e fechou sem querer).
+  const MIN_SESSION_SECONDS = 5;
+  // De quanto em quanto tempo a sessão em andamento é gravada (ms), para não
+  // perder nada se a aba for fechada de repente.
+  const SESSION_AUTOSAVE_MS = 15000;
+  // Endereço do painel (link discreto "Área do profissional").
+  const ADMIN_PAGE_URL = 'admin.html';
+
+  /* ==========================================================================
+     [AO VIVO] SESSÃO AO VIVO
+     Enquanto alguém joga, o painel mostra "Sessão ao vivo agora" com o nome.
+     Os trechos dessa função estão marcados com [AO VIVO] neste arquivo.
+     Estas constantes PRECISAM ser iguais às do admin.html.
+     ========================================================================== */
+  // Chave do localStorage onde fica a sessão que está acontecendo agora.
+  const ACTIVE_SESSION_KEY = 'activeSession';
+  // De quanto em quanto tempo o jogo avisa "ainda estou aqui" (batimento), em ms.
+  const HEARTBEAT_INTERVAL_MS = 2000;
+  // Sem batimento por este tempo, a sessão é considerada encerrada (ms).
+  const SESSION_TIMEOUT_MS = 10000;
+  // Nome do canal de avisos entre abas (BroadcastChannel).
+  const LIVE_CHANNEL_NAME = 'movimentese-ao-vivo';
+  // Tamanho máximo do nome digitado.
+  const PLAYER_NAME_MAX_LENGTH = 40;
+  </script>
+
+  <script>
+  /* ==========================================================================
+     [ACOLHER] IDENTIDADE, TEXTOS E BEM-ESTAR
+     Tudo o que dá o "tom de voz" do produto fica aqui, para ajustar sem
+     procurar pelo arquivo. A regra geral dos textos: frases curtas, calorosas,
+     sem cobrança e sem palavras de consultório.
+     ========================================================================== */
+
+  // Nome do produto (aparece ao lado do logo e no título da aba).
+  // PRECISA ser igual ao do admin.html.
+  const PRODUCT_NAME = 'Movimento Leve';
+
+  // TEXTOS — troque as frases à vontade. O que está entre chaves é preenchido
+  // sozinho: {n} = um número, {profissional} = quem assinou o recado.
+  const TEXTS = {
+    // Primeira tela
+    boasVindas: 'Olá! Quem vai se movimentar hoje?',
+    privacidade: 'Seus dados são seus. Só o profissional que te acompanha vê.',
+    // Tela de saudação e bem-estar
+    saudacaoComplemento: 'Que bom ver você por aqui.',
+    perguntaBemEstar: 'Como você está se sentindo hoje?',
+    recadoIntro: '{profissional} deixou um recado para você:',
+    // Tela de instruções
+    convite: 'Vamos nos movimentar?',
+    semPressa: 'Ele anda bem devagar. Não tem pressa e não tem como errar.',
+    cuidadoExtra: 'Obrigado por contar. Vá no seu ritmo e pare quando quiser.',
+    camera: 'Vamos pedir para usar a câmera. As imagens ficam só no seu computador.',
+    // Pequenas vitórias (só para quem tem histórico)
+    vitoriaPrimeira: 'Hoje é um ótimo dia para começar.',
+    vitoriaUma: 'Você já fez 1 sessão esta semana!',
+    vitoriaVarias: 'Você já fez {n} sessões esta semana!',
+    // Tela de encerramento
+    fimTitulo: 'Muito bem! Você cuidou de você hoje.',
+    fimSemCapturas: 'Vamos tentar mais uma vez juntos?',
+    fimUmaCaptura: 'Você segurou o bonequinho 1 vez.',
+    fimVariasCapturas: 'Você segurou o bonequinho {n} vezes.',
+  };
+
+  // [LER] INSTRUÇÕES POR ESCRITO — o cartão "Como funciona", para quem prefere
+  // ler a ouvir. Escreva como quem conversa, não como manual.
+  // {segundos} vira "3 segundos". Uma última frase entra sozinha, logo depois
+  // destas: TEXTS.semPressa (ou TEXTS.cuidadoExtra, para quem relatou dor).
+  // Se trocar CURSOR_MODE para 'maoMaisAlta', ajuste a segunda frase.
+  const INSTRUCOES_ESCRITAS = {
+    titulo: 'Como funciona',
+    frases: [
+      'Um bonequinho vai passear pela tela.',
+      'Leve as mãos até ele, como quem vai dar um abraço.',
+      'Fique com as mãos nele por {segundos}. Ele sorri e você ganha um ponto!',
+    ],
+  };
+
+  // [NÍVEL] Frases de quando o nível sobe (vão se revezando). Sempre positivas:
+  // o jogo nunca diz "você demorou" nem "você errou".
+  const MENSAGENS_DE_NIVEL = [
+    'Você está indo muito bem! O bonequinho vai andar um pouquinho mais rápido.',
+    'Que beleza! Vamos deixar um pouquinho mais animado.',
+    'Você está pegando o jeito! O bonequinho vai passear um pouco mais.',
+  ];
+
+  // Frases de comemoração a cada captura (vão se revezando).
+  const CAPTURE_MESSAGES = [
+    'Muito bem! Você conseguiu!',
+    'Isso mesmo! Que beleza!',
+    'Você está indo muito bem!',
+  ];
+
+  // BEM-ESTAR — as respostas de "Como você está se sentindo hoje?".
+  // "id" é o que fica gravado; "texto" é o que aparece no botão.
+  // PRECISA ter os mesmos "id" do admin.html.
+  const WELLBEING_OPTIONS = [
+    { id: 'bem',         texto: 'Estou bem' },
+    { id: 'dor',         texto: 'Um pouco de dor' },
+    { id: 'dificuldade', texto: 'Com dificuldade' },
+  ];
+
+  // Velocidade da voz que lê as instruções (1 = normal; 0.9 = um pouco mais devagar).
+  const SPEECH_RATE = 0.9;
+
+  // Chaves do localStorage. (O prefixo antigo "movimentese." foi mantido de
+  // propósito: trocar o nome das chaves apagaria os dados já guardados.)
+  const STORAGE_KEY_MESSAGES = 'movimentese.recados';   // recados do profissional — igual ao admin.html
+  const STORAGE_KEY_SOUND = 'movimentese.som';          // lembra se o som está ligado
+  </script>
+
+  <!-- [ACOLHER] Fontes: Nunito (arredondada) nos títulos e botões, Inter no texto. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Nunito:wght@700;800&display=swap" rel="stylesheet">
+
+  <style>
+    /* ======================================================================
+       1. VARIÁVEIS DE COR E TAMANHO
+       [ACOLHER] Paleta quente e suave. Mude aqui e o site inteiro acompanha.
+       As cores pastel nunca levam texto branco: o texto é sempre o
+       cinza-escuro quente, que passa no contraste AA/AAA sobre todas elas.
+       ====================================================================== */
+    :root {
+      /* ---- PALETA (a "cara" do produto) ---- */
+      --creme: #FFF8F0;            /* fundo */
+      --menta: #A8D5BA;            /* botão principal, "estou bem" */
+      --ceu: #9CC7E8;              /* destaques calmos, cursor */
+      --coral: #F4A6A0;            /* carinho, atenção suave */
+      --texto: #3B3B3B;            /* cinza-escuro quente — contraste 10:1 no creme */
+
+      /* Tons FORTES das mesmas cores, para contornos, ícones e números
+         (contraste ≥ 4,5:1 sobre o creme e o branco). */
+      --menta-forte: #2E7D57;
+      --ceu-forte: #2A6A9E;
+      --coral-forte: #B8463D;
+      /* Tons CLAROS, para o fundo de cartões e avisos. */
+      --menta-clara: #E4F3EA;
+      --ceu-claro: #E6F1FA;
+      --coral-claro: #FDEBE8;
+
+      /* ---- PAPÉIS (onde cada cor é usada) ---- */
+      --fundo: var(--creme);
+      --superficie: #FFFFFF;
+      --texto-suave: #5A554F;            /* contraste 7:1 */
+      --primaria: var(--menta);          /* fundo do botão principal */
+      --primaria-escura: #93C8A8;        /* o mesmo botão com o mouse em cima */
+      --primaria-borda: var(--menta-forte);
+      --destaque: var(--ceu-forte);      /* números, ícones e contornos */
+      --foco: var(--ceu-forte);          /* contorno de foco do teclado */
+
+      --palco-fundo: #F1F8FD;            /* azul-céu bem claro da área de jogo */
+      --palco-borda: var(--ceu);
+      --sucesso: #1F5E3F;                /* verde escuro das mensagens de conquista */
+
+      --boneco: #3B3B3B;                 /* traço do boneco */
+      --boneco-rosto: #FFE3B0;
+      --brilho: #FFD27A;                 /* brilho enquanto segura */
+      --estrela: #F6C453;
+      --estrela-borda: #8A5A00;
+      --progresso: var(--menta-forte);   /* anel que enche ao segurar (verde: "quase lá") */
+      --area-captura: var(--ceu-forte);
+
+      --cursor-fundo: rgba(156, 199, 232, .55);   /* azul-céu translúcido */
+      --cursor-borda: var(--ceu-forte);
+
+      --aviso-fundo: var(--coral-claro);
+      --aviso-texto: var(--texto);
+      --erro: var(--coral-forte);
+
+      /* ---- FORMAS E LETRAS ---- */
+      --raio: 24px;                      /* cantos bem arredondados */
+      --sombra: 0 4px 16px rgba(59, 59, 59, .10);
+      --texto-base: clamp(24px, 3.2vh, 30px);
+      --texto-titulo: clamp(38px, 6.2vh, 60px);
+      --altura-botao: 80px;
+      --fonte-titulo: "Nunito", "Quicksand", system-ui, sans-serif;
+      --fonte: "Inter", system-ui, "Segoe UI", Roboto, Arial, sans-serif;
+    }
+
+    /* ======================================================================
+       2. BASE
+       ====================================================================== */
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--fundo);
+      color: var(--texto);
+      font-family: var(--fonte);
+      font-size: var(--texto-base);
+      line-height: 1.35;
+      overflow: hidden;            /* nada de rolagem: tudo cabe na tela */
+    }
+
+    h1, h2, p { margin: 0; }
+
+    /* Texto só para leitores de tela (anúncios falados). */
+    .so-leitor {
+      position: absolute; width: 1px; height: 1px;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+    }
+
+    /* Cada "tela" ocupa a janela inteira. Só uma aparece por vez. */
+    .tela {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: safe center;   /* se não couber, começa do topo (não corta em cima) */
+      gap: clamp(12px, 2.4vh, 26px);
+      padding: 80px 24px 24px;     /* o topo guarda lugar para o logo */
+      text-align: center;
+      overflow: auto;              /* só por segurança em telas muito pequenas */
+    }
+    .tela[hidden] { display: none; }
+
+    .titulo {
+      font-family: var(--fonte-titulo);
+      font-size: var(--texto-titulo);
+      font-weight: 800;
+      line-height: 1.1;
+    }
+    .titulo:focus { outline: none; }
+
+    /* ======================================================================
+       3. BOTÕES GRANDES
+       ====================================================================== */
+    .botao {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      min-height: var(--altura-botao);
+      min-width: 280px;
+      padding: 12px 40px;
+      border: 3px solid var(--primaria-borda);
+      border-radius: var(--raio);
+      background: var(--primaria);
+      color: var(--texto);
+      font: 800 clamp(26px, 3.8vh, 34px)/1.1 var(--fonte-titulo);
+      box-shadow: var(--sombra);
+      cursor: pointer;
+      transition: background-color .2s, transform .1s;
+    }
+    .botao:hover { background: var(--primaria-escura); }
+    .botao:active { transform: scale(.98); }
+    .botao:focus-visible { outline: 6px solid var(--foco); outline-offset: 4px; }
+    .botao svg { width: 1.2em; height: 1.2em; flex: none; }
+
+    .botao.secundario {
+      background: var(--superficie);
+      border-color: var(--ceu-forte);
+    }
+    .botao.secundario:hover { background: var(--ceu-claro); }
+
+    /* [AO VIVO] Botão desligado (ex.: "Continuar" antes de digitar o nome) */
+    .botao:disabled {
+      background: #E7E2DA;
+      border-color: #BDB6AC;
+      color: #5F5A54;
+      box-shadow: none;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .botao.pequeno {
+      min-width: 0;
+      min-height: 64px;
+      padding: 8px 24px;
+      font-size: 26px;
+    }
+
+    /* ======================================================================
+       4. TELA INICIAL
+       ====================================================================== */
+    .passos {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: clamp(8px, 1.6vh, 16px);
+      text-align: left;
+    }
+    .passos li {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      font-size: clamp(26px, 3.6vh, 34px);
+    }
+    .passos .numero {
+      flex: none;
+      display: grid;
+      place-items: center;
+      width: 56px; height: 56px;
+      border-radius: 50%;
+      background: var(--ceu);
+      color: var(--texto);
+      font: 800 28px var(--fonte-titulo);
+    }
+    .aviso-inicial {
+      max-width: 960px;
+      color: var(--texto-suave);
+    }
+    .ilustracao-inicial { width: clamp(96px, 15vh, 170px); height: auto; flex: none; }
+    @media (max-height: 999px), (max-aspect-ratio: 1/1) { .ilustracao-inicial { display: none; } }
+
+    /* ----------------------------------------------------------------------
+       [PAINEL] TELA "QUEM VAI JOGAR?" e etiqueta com o nome de quem joga
+       ---------------------------------------------------------------------- */
+    .lista-pacientes {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(260px, 400px));
+      gap: 20px;
+      justify-content: center;
+      width: 100%;
+    }
+    .botao-paciente {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      min-height: 88px;
+      padding: 12px 28px;
+      border: 3px solid var(--ceu-forte);
+      border-radius: var(--raio);
+      background: var(--superficie);
+      color: var(--texto);
+      font: 800 clamp(28px, 4.2vh, 38px)/1.1 var(--fonte-titulo);
+      text-align: left;
+      box-shadow: var(--sombra);
+      cursor: pointer;
+      transition: background-color .2s;
+    }
+    .botao-paciente:hover { background: var(--ceu-claro); }
+    .botao-paciente:focus-visible { outline: 6px solid var(--foco); outline-offset: 4px; }
+    .botao-paciente .iniciais {
+      flex: none;
+      display: grid;
+      place-items: center;
+      width: 58px; height: 58px;
+      border-radius: 50%;
+      background: var(--ceu);
+      color: var(--texto);
+      font-size: 24px;
+    }
+    @media (max-width: 700px) { .lista-pacientes { grid-template-columns: minmax(0, 420px); } }
+
+    /* [AO VIVO] Campo "Digite seu nome antes de começar" */
+    .form-nome {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      width: min(820px, 100%);
+    }
+    .form-nome label { font: 800 clamp(28px, 4vh, 36px) var(--fonte-titulo); }
+    .linha-nome { display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; width: 100%; }
+    .campo-nome {
+      flex: 1 1 340px;
+      min-width: 0;
+      height: var(--altura-botao);
+      padding: 0 24px;
+      border: 3px solid var(--ceu-forte);
+      border-radius: var(--raio);
+      background: var(--superficie);
+      color: var(--texto);
+      font: 700 clamp(28px, 4vh, 36px) var(--fonte-titulo);
+    }
+    .campo-nome::placeholder { color: #6B655E; font-weight: 700; }
+    .campo-nome:focus-visible { outline: 6px solid var(--foco); outline-offset: 4px; }
+    .linha-nome .botao { min-width: 220px; }
+    .dica-nome, .ou-toque { font-size: 24px; color: var(--texto-suave); }
+
+    .link-profissional {
+      display: inline-flex;
+      align-items: center;
+      min-height: 48px;
+      padding: 0 16px;
+      color: var(--texto-suave);
+      font-size: 24px;
+    }
+    .link-profissional:focus-visible { outline: 6px solid var(--foco); outline-offset: 4px; }
+
+    .jogador-atual {               /* na barra do topo, à direita */
+      display: none;               /* só aparece depois que a pessoa diz o nome */
+      align-items: center;
+      gap: 14px;
+      font-size: 24px;
+    }
+    body[data-tela="tela-bem-estar"] .jogador-atual,
+    body[data-tela="tela-inicial"] .jogador-atual { display: flex; }
+    .jogador-atual .botao { min-height: 56px; font-size: 24px; padding: 6px 20px; }
+    @media (max-width: 700px) { .jogador-atual > span { display: none; } }
+
+    /* ======================================================================
+       5. TELA DE CARREGAMENTO
+       ====================================================================== */
+    .lista-status {
+      list-style: none; margin: 0; padding: 0;
+      display: flex; flex-direction: column; gap: 16px;
+      text-align: left;
+    }
+    .lista-status li { display: flex; align-items: center; gap: 20px; font-size: 30px; }
+    .icone-status {
+      flex: none; width: 48px; height: 48px;
+      display: grid; place-items: center;
+    }
+    .girando {
+      width: 40px; height: 40px;
+      border: 6px solid var(--ceu-claro);
+      border-top-color: var(--ceu-forte);
+      border-radius: 50%;
+      animation: girar 1s linear infinite;
+    }
+    @keyframes girar { to { transform: rotate(360deg); } }
+    .icone-status svg { width: 44px; height: 44px; color: var(--sucesso); }
+
+    .dica {
+      max-width: 760px;
+      padding: 16px 24px;
+      border-radius: var(--raio);
+      background: var(--ceu-claro);
+      color: var(--texto);
+    }
+
+    /* ======================================================================
+       6. TELA DE ERRO
+       ====================================================================== */
+    .icone-erro { width: 120px; height: 120px; color: var(--erro); }
+    #erro-titulo { color: var(--erro); }
+    #erro-detalhe { max-width: 820px; }
+    .fila-botoes { display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; }
+
+    /* ======================================================================
+       7. TELA DA ATIVIDADE
+       Topo: instrução · pontos · câmera · parar. Embaixo: área de jogo.
+       ====================================================================== */
+    #tela-atividade {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);   /* ocupa a largura toda */
+      grid-template-rows: auto 1fr;
+      gap: 16px;
+      padding: 16px;
+      align-items: stretch;
+      justify-items: stretch;
+      text-align: left;
+    }
+    #tela-atividade[hidden] { display: none; }
+
+    .topo {
+      display: grid;
+      grid-template-columns: 1fr auto auto auto;
+      gap: 16px;
+      align-items: stretch;
+    }
+
+    .instrucao {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      min-height: 96px;
+      padding: 12px 28px;
+      border-radius: var(--raio);
+      background: var(--superficie);
+      border: 3px solid var(--ceu-forte);
+      box-shadow: var(--sombra);
+      font: 800 clamp(28px, 4.2vh, 40px)/1.2 var(--fonte-titulo);
+    }
+    .instrucao:focus { outline: none; }
+    .instrucao svg { flex: none; width: 56px; height: 56px; color: var(--destaque); }
+    .instrucao.alerta {
+      background: var(--aviso-fundo);
+      border-color: var(--coral-forte);
+    }
+    .instrucao.alerta svg { color: var(--coral-forte); }
+
+    .cartao {
+      background: var(--superficie);
+      border-radius: var(--raio);
+      border: 2px solid #EADFD2;
+      box-shadow: var(--sombra);
+      padding: 8px 16px;
+      text-align: center;
+    }
+    .cartao-rotulo { font: 700 24px var(--fonte-titulo); color: var(--texto-suave); }
+
+    .cartao-pontos {
+      min-width: 170px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    .pontos-numero {
+      font: 800 clamp(56px, 9vh, 88px)/1 var(--fonte-titulo);
+      color: var(--destaque);
+    }
+    .pontos-numero.pulo { animation: pulo .6s ease-out; }
+    @keyframes pulo { 40% { transform: scale(1.3); color: var(--sucesso); } }
+
+    .cartao-camera { width: clamp(150px, 15vw, 210px); padding: 8px; display: flex; align-items: center; }
+    .camera-moldura {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      border: 3px solid var(--ceu-forte);
+      border-radius: 16px;
+      overflow: hidden;
+      background: #3B3B3B;
+      transform: scaleX(-1);       /* espelha: a pessoa se vê como no espelho */
+    }
+    .camera-moldura video,
+    .camera-moldura canvas {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      object-fit: cover;
+    }
+    .camera-aviso {
+      position: absolute; inset: 0;
+      display: grid; place-items: center;
+      padding: 8px;
+      color: #FFFFFF;
+      font-size: 24px;
+      text-align: center;
+      transform: scaleX(-1);       /* desfaz o espelho para o texto ficar legível */
+    }
+    .camera-aviso[hidden] { display: none; }
+    /* [AO VIVO] "Encerrar sessão" em duas linhas, para não apertar a instrução */
+    .topo .botao { align-self: center; width: min-content; padding: 8px 18px; gap: 12px; }
+
+    /* Área de jogo */
+    .palco-caixa {
+      position: relative;
+      min-height: 0;
+      border-radius: var(--raio);
+      overflow: hidden;
+      background: var(--palco-fundo);
+      border: 3px solid var(--palco-borda);
+      box-shadow: var(--sombra);
+    }
+    #palco { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+    /* Cores do boneco e da área de captura (SVG) */
+    .boneco-traco {
+      fill: none;
+      stroke: var(--boneco);
+      stroke-width: 12;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .boneco-cabeca { fill: var(--boneco-rosto); stroke: var(--boneco); stroke-width: 10; }
+    .boneco-olho { fill: var(--boneco); }
+    .boneco-sorriso { fill: none; stroke: var(--boneco); stroke-width: 5; stroke-linecap: round; }
+    .boneco-sorriso-feliz { fill: var(--boneco); stroke: var(--boneco); stroke-width: 3; stroke-linejoin: round; }
+    .boneco-sombra { fill: rgba(59, 59, 59, .14); }
+    .area-brilho { fill: var(--brilho); }
+    .area-trilha { fill: none; stroke: var(--area-captura); stroke-width: 4; stroke-dasharray: 10 12; opacity: .35; }
+    .area-progresso { fill: none; stroke: var(--progresso); stroke-width: 16; stroke-linecap: round; }
+
+    /* CURSOR VIRTUAL: círculo azul translúcido que segue as mãos. */
+    #cursor-mao {
+      position: absolute;
+      left: 0; top: 0;
+      width: 96px; height: 96px;
+      margin: -48px 0 0 -48px;
+      border-radius: 50%;
+      border: 6px solid var(--cursor-borda);
+      background: var(--cursor-fundo);
+      box-shadow: 0 0 0 4px rgba(255, 255, 255, .85);
+      pointer-events: none;
+      z-index: 20;
+      will-change: transform;
+      transition: background-color .3s;
+    }
+    #cursor-mao::after {           /* pontinho no centro */
+      content: "";
+      position: absolute;
+      left: 50%; top: 50%;
+      width: 16px; height: 16px;
+      margin: -8px 0 0 -8px;
+      border-radius: 50%;
+      background: var(--cursor-borda);
+    }
+    #cursor-mao.segurando { background: rgba(255, 210, 122, .6); }
+    #cursor-mao[hidden] { display: none; }
+
+    #efeitos {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      z-index: 15;
+    }
+
+    /* Mensagem "Muito bem! Você conseguiu!" (aparece e some sozinha) */
+    #mensagem {
+      position: absolute;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 18;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 36px;
+      border-radius: 28px;
+      border: 4px solid var(--menta-forte);
+      background: var(--superficie);
+      color: var(--sucesso);
+      font: 800 clamp(34px, 6vh, 58px)/1.15 var(--fonte-titulo);
+      white-space: nowrap;
+      pointer-events: none;
+      box-shadow: 0 8px 24px rgba(46, 125, 87, .2);
+      animation: aparecer .45s ease-out;
+      transition: opacity .6s;     /* some devagar, sem "piscar" */
+    }
+    #mensagem.saindo { opacity: 0; }
+    /* [NÍVEL] Mensagem de "subiu de nível": é mais comprida, então quebra em linhas. */
+    #mensagem.longa {
+      white-space: normal;
+      width: min(92%, 980px);
+      justify-content: center;
+      text-align: center;
+      font-size: clamp(26px, 4.2vh, 40px);
+    }
+    #mensagem[hidden] { display: none; }
+    #mensagem svg { width: 1.1em; height: 1.1em; flex: none; }
+    @keyframes aparecer {              /* cresce de leve (sempre visível) */
+      from { transform: translateX(-50%) scale(.85); }
+      to   { transform: translateX(-50%) scale(1); }
+    }
+
+    /* Telas estreitas ou em pé (tablet vertical): a instrução desce uma linha. */
+    @media (max-width: 900px), (max-aspect-ratio: 1/1) {
+      .topo { grid-template-columns: 1fr auto auto; }
+      .instrucao { grid-column: 1 / -1; grid-row: 2; min-height: 80px; }
+      .cartao-camera { width: 150px; }
+      #mensagem { white-space: normal; width: calc(100% - 40px); justify-content: center; text-align: center; }
+    }
+
+    /* ======================================================================
+       7b. [ACOLHER] MARCA, SOM, BEM-ESTAR, RECADO, VITÓRIAS E ENCERRAMENTO
+       ====================================================================== */
+
+    /* Barra do topo: logo e nome à esquerda; som e "quem joga" à direita.
+       Fica por cima das telas de antes do jogo e some durante a atividade. */
+    .barra-topo {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 30;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 10px 20px;
+    }
+    .marca {
+      margin-right: auto;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font: 800 26px var(--fonte-titulo);
+    }
+    .marca svg { width: 48px; height: 48px; flex: none; }
+
+    /* Botão "Som ligado / Som desligado". */
+    .botao-som {
+      min-width: 0;
+      min-height: 56px;
+      padding: 6px 20px;
+      font-size: 24px;
+    }
+    .botao-som .risco { display: none; }
+    .botao-som.desligado .ondas { display: none; }
+    .botao-som.desligado .risco { display: inline; }
+    body[data-tela="tela-atividade"] .barra-topo { display: none; }
+    .botao-som, .jogador-atual > span { white-space: nowrap; }
+    @media (max-width: 860px) { .marca span { display: none; } }
+    @media (max-width: 600px) { .botao-som span { display: none; } }
+
+    /* [LER] Tela de instruções: os 3 passos lado a lado (para sobrar altura) e,
+       abaixo dos botões, o cartão com as instruções por extenso. */
+    #tela-inicial .passos { flex-direction: row; align-items: flex-start; justify-content: center; gap: clamp(16px, 2.4vw, 36px); width: 100%; max-width: 1120px; }
+    #tela-inicial .passos li { flex: 1 1 0; max-width: 340px; font-size: clamp(24px, 3.3vh, 30px); line-height: 1.25; gap: 14px; }
+    .cartao-instrucoes {
+      width: min(960px, 100%);
+      padding: 16px 26px 18px;
+      border-radius: var(--raio);
+      background: var(--ceu-claro);
+      box-shadow: var(--sombra);
+      text-align: left;
+    }
+    .cartao-instrucoes h2 { font: 800 clamp(26px, 3.8vh, 32px)/1.15 var(--fonte-titulo); margin-bottom: 6px; }
+    .cartao-instrucoes p { font-size: var(--texto-base); line-height: 1.3; margin-top: 4px; }
+    /* Tablet em pé: os dois botões continuam lado a lado (letra um pouco menor). */
+    @media (max-width: 860px) {
+      #tela-inicial .fila-botoes .botao { min-width: 0; padding: 12px 22px; font-size: 26px; }
+      #tela-inicial .passos li { font-size: 24px; }
+    }
+    @media (max-width: 700px) {
+      #tela-inicial .passos { flex-direction: column; align-items: stretch; width: auto; }
+      #tela-inicial .passos li { max-width: none; }
+    }
+
+    /* Promessa de privacidade, no pé da primeira tela. */
+    .privacidade {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 24px;
+      color: var(--texto-suave);
+    }
+    .privacidade svg { width: 28px; height: 28px; flex: none; color: var(--menta-forte); }
+
+    /* Tela de saudação e bem-estar */
+    .saudacao-sub { font-size: clamp(26px, 3.6vh, 32px); color: var(--texto-suave); }
+    .pergunta { font: 800 clamp(30px, 4.6vh, 42px)/1.15 var(--fonte-titulo); }
+    .opcoes-bem-estar {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(200px, 280px));
+      gap: 20px;
+      justify-content: center;
+      width: 100%;
+    }
+    .opcao-bem-estar {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      min-height: clamp(150px, 24vh, 200px);
+      padding: 16px;
+      border: 3px solid var(--ceu-forte);
+      border-radius: var(--raio);
+      background: var(--ceu-claro);
+      color: var(--texto);
+      font: 800 clamp(26px, 3.6vh, 32px)/1.15 var(--fonte-titulo);
+      box-shadow: var(--sombra);
+      cursor: pointer;
+      transition: background-color .2s, transform .1s;
+    }
+    .opcao-bem-estar svg { width: clamp(64px, 10vh, 88px); height: auto; flex: none; }
+    .opcao-bem-estar:active { transform: scale(.98); }
+    .opcao-bem-estar:focus-visible { outline: 6px solid var(--foco); outline-offset: 4px; }
+    /* Uma cor para cada resposta (o significado está no rosto e no texto). */
+    .opcao-bem-estar.bem { background: var(--menta-clara); border-color: var(--menta-forte); }
+    .opcao-bem-estar.bem:hover { background: var(--menta); }
+    .opcao-bem-estar.dor { background: var(--ceu-claro); border-color: var(--ceu-forte); }
+    .opcao-bem-estar.dor:hover { background: var(--ceu); }
+    .opcao-bem-estar.dificuldade { background: var(--coral-claro); border-color: var(--coral-forte); }
+    .opcao-bem-estar.dificuldade:hover { background: var(--coral); }
+    @media (max-width: 760px) {
+      .opcoes-bem-estar { grid-template-columns: minmax(0, 440px); }
+      .opcao-bem-estar { flex-direction: row; justify-content: flex-start; min-height: 96px; padding: 12px 24px; }
+      .opcao-bem-estar svg { width: 64px; }
+    }
+
+    /* Recado do profissional */
+    .recado {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      max-width: 860px;
+      padding: 14px 26px;
+      border-radius: var(--raio);
+      border: 3px solid var(--coral);
+      background: var(--superficie);
+      box-shadow: var(--sombra);
+      text-align: left;
+    }
+    .recado[hidden] { display: none; }
+    .recado svg { width: 48px; height: 48px; flex: none; }
+    .recado .de { font-size: 24px; color: var(--texto-suave); }
+    .recado .texto-recado { font: 800 clamp(26px, 3.6vh, 32px)/1.25 var(--fonte-titulo); }
+
+    /* Pequena vitória: "Você já fez 5 sessões esta semana!" */
+    .vitoria {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 26px;
+      border-radius: 999px;
+      border: 2px solid var(--menta);
+      background: var(--menta-clara);
+      font: 800 clamp(24px, 3.4vh, 30px)/1.2 var(--fonte-titulo);
+    }
+    .vitoria[hidden] { display: none; }
+    .vitoria svg { width: 34px; height: 34px; flex: none; }
+
+    /* Tela de encerramento */
+    .icone-fim { width: clamp(96px, 16vh, 150px); height: auto; }
+    .fim-resultado { font-size: clamp(28px, 4vh, 36px); }
+
+    /* ======================================================================
+       8. MOVIMENTO REDUZIDO
+       Se a pessoa pediu ao sistema para reduzir animações, obedecemos.
+       (O boneco continua andando — isso é a mecânica — mas sem balançar.)
+       ====================================================================== */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+      .girando { border-top-color: var(--ceu-forte); border-right-color: var(--ceu-forte); }
+    }
+  </style>
+</head>
+
+<body data-tela="tela-paciente">
+  <!-- Região invisível: o leitor de tela fala o que for escrito aqui. -->
+  <div id="anuncio" class="so-leitor" aria-live="assertive" aria-atomic="true"></div>
+
+  <!-- ====================================================================
+       [ACOLHER] ELEMENTOS FIXOS, que acompanham as telas antes do jogo
+       ==================================================================== -->
+  <div class="barra-topo">
+  <!-- Marca: logo (coração com um gesto de movimento) + nome do produto. -->
+  <div class="marca">
+    <svg viewBox="0 0 48 48" aria-hidden="true">
+      <circle cx="24" cy="24" r="24" fill="#A8D5BA"/>
+      <path d="M24 37 C 11 27.5, 10.5 17, 17 14.5 C 20.6 13.1, 23.3 15.2, 24 17.6 C 24.7 15.2, 27.4 13.1, 31 14.5 C 37.5 17, 37 27.5, 24 37 Z" fill="#F4A6A0" stroke="#B8463D" stroke-width="1.8" stroke-linejoin="round"/>
+      <path d="M35.5 9.5 q4.2 2.6 5 7.4 M39.6 5.6 q6 3.8 7 10.6" fill="none" stroke="#2E7D57" stroke-width="2.4" stroke-linecap="round"/>
+    </svg>
+    <span id="marca-nome">Movimento Leve</span>
+  </div>
+
+  <!-- Liga e desliga TODOS os sons: os efeitos do jogo e a voz das instruções. -->
+  <button id="botao-som" class="botao secundario botao-som" type="button" aria-pressed="true">
+    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor" stroke-width="1.6"/><path class="ondas" d="M15.5 9a4.2 4.2 0 0 1 0 6M18.2 6.3a8 8 0 0 1 0 11.4"/><path class="risco" d="M16 9.5l5 5M21 9.5l-5 5"/></svg>
+    <span id="botao-som-texto">Som ligado</span>
+  </button>
+
+  <!-- Quem está jogando, com botão para trocar. -->
+  <div class="jogador-atual">
+    <span>Jogando: <strong id="jogador-nome"></strong></span>
+    <button id="botao-trocar" class="botao secundario pequeno" type="button">Trocar</button>
+  </div>
+  </div><!-- fim da barra do topo -->
+
+  <!-- ====================================================================
+       [PAINEL] TELA 0: QUEM VAI JOGAR?
+       A pessoa (ou o cuidador) escolhe o nome, para que os resultados sejam
+       gravados no paciente certo. Os botões são montados pelo JavaScript a
+       partir da lista de pacientes.
+       ==================================================================== -->
+  <section id="tela-paciente" class="tela" aria-labelledby="paciente-titulo">
+    <h1 id="paciente-titulo" class="titulo" tabindex="-1" data-texto="boasVindas">Olá! Quem vai se movimentar hoje?</h1>
+
+    <!-- [AO VIVO] Campo para digitar o nome. Vale para qualquer pessoa: se o
+         nome for de um paciente cadastrado, a sessão entra no histórico dele;
+         se não for, a pessoa aparece só na "Sessão ao vivo" do painel. -->
+    <form id="form-nome" class="form-nome" novalidate>
+      <label for="campo-nome">Digite seu nome antes de começar</label>
+      <div class="linha-nome">
+        <input id="campo-nome" class="campo-nome" type="text" placeholder="Seu nome"
+               autocomplete="off" autocapitalize="words" spellcheck="false"
+               aria-describedby="dica-nome">
+        <button id="botao-continuar" class="botao" type="submit" disabled
+                aria-label="Continuar para as instruções">Continuar</button>
+      </div>
+      <p id="dica-nome" class="dica-nome" aria-live="polite">Escreva seu nome para continuar.</p>
+    </form>
+
+    <p id="ou-toque" class="ou-toque">Ou toque no seu nome:</p>
+    <div id="lista-pacientes" class="lista-pacientes" role="group" aria-labelledby="ou-toque"></div>
+
+    <!-- [ACOLHER] Privacidade como promessa visível. -->
+    <p class="privacidade">
+      <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>
+      <span data-texto="privacidade">Seus dados são seus. Só o profissional que te acompanha vê.</span>
+    </p>
+    <a id="link-profissional" class="link-profissional" href="admin.html">Área do profissional</a>
+  </section>
+
+  <!-- ====================================================================
+       [ACOLHER] TELA DE SAUDAÇÃO E BEM-ESTAR
+       "Bom dia, Fulana!" + recado do profissional (se houver) + a pergunta
+       "Como você está se sentindo hoje?". A resposta vai junto com a sessão
+       para o painel do profissional.
+       ==================================================================== -->
+  <section id="tela-bem-estar" class="tela" aria-labelledby="saudacao-titulo" hidden>
+    <h1 id="saudacao-titulo" class="titulo" tabindex="-1">Olá!</h1>
+    <p class="saudacao-sub" data-texto="saudacaoComplemento">Que bom ver você por aqui.</p>
+
+    <!-- Recado do profissional: só aparece se houver um para este paciente. -->
+    <div id="recado" class="recado" hidden>
+      <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M24 40 C 8 28, 7 14, 15.5 11 C 20 9.4, 23.2 12, 24 15 C 24.8 12, 28 9.4, 32.5 11 C 41 14, 40 28, 24 40 Z" fill="#F4A6A0" stroke="#B8463D" stroke-width="2.4" stroke-linejoin="round"/></svg>
+      <div>
+        <p class="de" id="recado-de"></p>
+        <p class="texto-recado" id="recado-texto"></p>
+      </div>
+    </div>
+
+    <h2 id="pergunta-bem-estar" class="pergunta" data-texto="perguntaBemEstar">Como você está se sentindo hoje?</h2>
+    <!-- Os três botões são montados pelo JavaScript, a partir de WELLBEING_OPTIONS. -->
+    <div id="opcoes-bem-estar" class="opcoes-bem-estar" role="group" aria-labelledby="pergunta-bem-estar"></div>
+
+    <button id="botao-ouvir-pergunta" class="botao secundario pequeno" type="button">
+      <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor" stroke-width="1.6"/><path d="M15.5 9a4.2 4.2 0 0 1 0 6M18.2 6.3a8 8 0 0 1 0 11.4"/></svg>
+      <span>Ouvir a pergunta</span>
+    </button>
+  </section>
+
+  <!-- ====================================================================
+       TELA 1: INICIAL
+       ==================================================================== -->
+  <section id="tela-inicial" class="tela" aria-labelledby="inicial-titulo" hidden>
+    <!-- [ACOLHER] Pequena vitória, sem ranking: "Você já fez 5 sessões esta semana!" -->
+    <p id="vitoria" class="vitoria" hidden>
+      <svg viewBox="0 0 100 100" aria-hidden="true"><polygon points="50,6 62,38 96,38 68,58 79,92 50,72 21,92 32,58 4,38 38,38" fill="#F6C453" stroke="#8A5A00" stroke-width="5" stroke-linejoin="round"/></svg>
+      <span id="vitoria-texto"></span>
+    </p>
+
+    <!-- Boneco dentro da área de captura, com o cursor azul (só decoração) -->
+    <svg class="ilustracao-inicial" viewBox="-130 -130 260 260" aria-hidden="true">
+      <circle r="118" class="area-trilha" style="opacity:.6"/>
+      <path d="M 0 -118 A 118 118 0 1 1 -102 59" class="area-progresso"/>
+      <g transform="scale(.8)">
+        <circle cx="0" cy="-72" r="26" class="boneco-cabeca"/>
+        <circle cx="-9" cy="-76" r="3.5" class="boneco-olho"/>
+        <circle cx="9" cy="-76" r="3.5" class="boneco-olho"/>
+        <path d="M -10 -64 Q 0 -56 10 -64" class="boneco-sorriso"/>
+        <path d="M 0 -46 L 0 28 M 0 -30 L -40 5 M 0 -30 L 38 -68 M 0 28 L -20 96 M 0 28 L 20 96" class="boneco-traco"/>
+      </g>
+      <circle cx="46" cy="-40" r="34" fill="rgba(156,199,232,.55)" stroke="#2A6A9E" stroke-width="6"/>
+    </svg>
+
+    <h1 id="inicial-titulo" class="titulo" tabindex="-1" data-texto="convite">Vamos nos movimentar?</h1>
+
+    <ol class="passos">
+      <li><span class="numero" aria-hidden="true">1</span> Fique de frente para a câmera.</li>
+      <li><span class="numero" aria-hidden="true">2</span> <span id="passo-maos">Junte as mãos e leve até o bonequinho.</span></li>
+      <li><span class="numero" aria-hidden="true">3</span> <span id="passo-segurar">Segure por 3 segundos.</span></li>
+    </ol>
+
+    <div class="fila-botoes">
+      <!-- [ACOLHER] Lê as instruções em voz alta (voz do próprio navegador). -->
+      <button id="botao-ouvir" class="botao secundario" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor" stroke-width="1.6"/><path d="M15.5 9a4.2 4.2 0 0 1 0 6M18.2 6.3a8 8 0 0 1 0 11.4"/></svg>
+        <span id="botao-ouvir-texto">Ouvir instruções</span>
+      </button>
+      <!-- [AO VIVO] Só fica ligado depois que a pessoa disse o nome. -->
+      <button id="botao-comecar" class="botao" type="button" disabled aria-label="Começar atividade">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg>
+        Começar atividade
+      </button>
+    </div>
+
+    <!-- [LER] INSTRUÇÕES POR ESCRITO, logo abaixo do botão "Ouvir instruções":
+         a alternativa para quem prefere ler, não tem som no computador ou
+         está num lugar silencioso. Fica sempre visível (não é sanfona).
+         O título e as frases vêm da constante INSTRUCOES_ESCRITAS. -->
+    <section id="instrucoes-escritas" class="cartao-instrucoes" aria-labelledby="instrucoes-titulo">
+      <h2 id="instrucoes-titulo">Como funciona</h2>
+      <div id="instrucoes-frases"><!-- montado pelo JavaScript --></div>
+      <!-- A última frase muda se a pessoa disse que está com dor ou dificuldade. -->
+      <p id="aviso-ritmo">Ele anda bem devagar. Não tem pressa e não tem como errar.</p>
+    </section>
+
+    <p class="aviso-inicial">
+      <span data-texto="camera">Vamos pedir para usar a câmera. As imagens ficam só no seu computador.</span>
+    </p>
+  </section>
+
+  <!-- ====================================================================
+       [ACOLHER] TELA DE ENCERRAMENTO
+       Em vez de "sessão encerrada": reconhecimento, sem cobrança.
+       ==================================================================== -->
+  <section id="tela-fim" class="tela" aria-labelledby="fim-titulo" hidden>
+    <svg class="icone-fim" viewBox="0 0 48 48" aria-hidden="true"><path d="M24 40 C 8 28, 7 14, 15.5 11 C 20 9.4, 23.2 12, 24 15 C 24.8 12, 28 9.4, 32.5 11 C 41 14, 40 28, 24 40 Z" fill="#F4A6A0" stroke="#B8463D" stroke-width="2" stroke-linejoin="round"/></svg>
+    <h2 id="fim-titulo" class="titulo" tabindex="-1" data-texto="fimTitulo">Muito bem! Você cuidou de você hoje.</h2>
+    <p id="fim-resultado" class="fim-resultado"></p>
+    <p id="fim-vitoria" class="vitoria" hidden>
+      <svg viewBox="0 0 100 100" aria-hidden="true"><polygon points="50,6 62,38 96,38 68,58 79,92 50,72 21,92 32,58 4,38 38,38" fill="#F6C453" stroke="#8A5A00" stroke-width="5" stroke-linejoin="round"/></svg>
+      <span id="fim-vitoria-texto"></span>
+    </p>
+    <div class="fila-botoes">
+      <button id="botao-de-novo" class="botao" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+        Jogar mais um pouco
+      </button>
+      <button id="botao-terminar" class="botao secundario" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+        Terminar por hoje
+      </button>
+    </div>
+  </section>
+
+  <!-- ====================================================================
+       TELA 2: CARREGANDO (câmera + modelo de visão computacional)
+       ==================================================================== -->
+  <section id="tela-carregando" class="tela" aria-labelledby="carregando-titulo" hidden>
+    <h2 id="carregando-titulo" class="titulo" tabindex="-1">Preparando tudo…</h2>
+
+    <ul class="lista-status">
+      <li>
+        <span class="icone-status" id="status-camera-icone"><span class="girando"></span></span>
+        <span id="status-camera-texto">Ligando a câmera…</span>
+      </li>
+      <li>
+        <span class="icone-status" id="status-modelo-icone"><span class="girando"></span></span>
+        <span id="status-modelo-texto">Preparando o jogo…</span>
+      </li>
+    </ul>
+
+    <p class="dica">Se aparecer uma pergunta sobre a câmera,<br>clique em <strong>Permitir</strong>.</p>
+  </section>
+
+  <!-- ====================================================================
+       TELA DE ERRO (mensagens amigáveis)
+       ==================================================================== -->
+  <section id="tela-erro" class="tela" aria-labelledby="erro-titulo" hidden>
+    <svg class="icone-erro" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 7h3l2-3h8l2 3h3v12H3z"/><circle cx="12" cy="13" r="4"/><path d="M2 2l20 20"/>
+    </svg>
+    <h2 id="erro-titulo" class="titulo" tabindex="-1">Não conseguimos acessar a câmera.</h2>
+    <p id="erro-detalhe">Toque no botão abaixo para permitir.</p>
+    <div class="fila-botoes">
+      <button id="botao-tentar" class="botao" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h3l2-3h8l2 3h3v12H3z"/><circle cx="12" cy="13" r="4"/></svg>
+        Tentar de novo
+      </button>
+      <button id="botao-mouse" class="botao secundario" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="6" y="3" width="12" height="18" rx="6"/><path d="M12 7v4"/></svg>
+        Jogar com o mouse
+      </button>
+    </div>
+  </section>
+
+  <!-- ====================================================================
+       TELA 3: ATIVIDADE
+       ==================================================================== -->
+  <section id="tela-atividade" class="tela" aria-label="Atividade: segure o bonequinho" hidden>
+
+    <div class="topo">
+      <!-- Instrução do momento (o leitor de tela anuncia cada mudança). -->
+      <p id="instrucao" class="instrucao" aria-live="polite" tabindex="-1">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-4 0v5M14 10V4a2 2 0 0 0-4 0v6M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg>
+        <span id="instrucao-texto">Fique de frente para a câmera.</span>
+      </p>
+
+      <div class="cartao cartao-pontos">
+        <span class="cartao-rotulo" id="pontos-rotulo">Pontos</span>
+        <div id="pontos" class="pontos-numero" aria-labelledby="pontos-rotulo">0</div>
+      </div>
+
+      <div class="cartao cartao-camera">
+        <div class="camera-moldura">
+          <video id="video" autoplay playsinline muted aria-label="Imagem da sua câmera"></video>
+          <canvas id="esqueleto" aria-hidden="true"></canvas>
+          <div id="camera-aviso" class="camera-aviso" hidden>Modo mouse</div>
+        </div>
+      </div>
+
+      <!-- [AO VIVO] Encerra a sessão ao vivo. [ACOLHER] Leva à tela de encerramento. -->
+      <button id="botao-parar" class="botao secundario pequeno" type="button"
+              aria-label="Terminar a atividade">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor"/></svg>
+        Terminar
+      </button>
+    </div>
+
+    <!-- Área de jogo: onde o boneco passeia. -->
+    <div id="palco-caixa" class="palco-caixa">
+      <svg id="palco" role="img" aria-label="Área do jogo com um bonequinho andando devagar.">
+        <!-- Área de captura (não escala com o boneco: raio em pixels). -->
+        <g id="area">
+          <circle id="area-brilho" class="area-brilho" r="120"/>
+          <circle id="area-trilha" class="area-trilha" r="120"/>
+          <circle id="area-progresso" class="area-progresso" r="120" transform="rotate(-90)"/>
+        </g>
+
+        <!-- O BONECO PALITO. Desenhado com a origem (0,0) no meio do corpo.
+             Altura total: 200 unidades (de -100 a +100). O JavaScript só
+             move, escala e mexe braços/pernas. -->
+        <g id="boneco">
+          <ellipse class="boneco-sombra" cx="0" cy="102" rx="46" ry="9"/>
+          <line id="perna-esq" class="boneco-traco" x1="0" y1="28"/>
+          <line id="perna-dir" class="boneco-traco" x1="0" y1="28"/>
+          <line class="boneco-traco" x1="0" y1="-46" x2="0" y2="28"/>
+          <line id="braco-esq" class="boneco-traco" x1="0" y1="-30"/>
+          <line id="braco-dir" class="boneco-traco" x1="0" y1="-30"/>
+          <circle class="boneco-cabeca" cx="0" cy="-72" r="26"/>
+          <circle class="boneco-olho" cx="-9" cy="-76" r="3.5"/>
+          <circle class="boneco-olho" cx="9" cy="-76" r="3.5"/>
+          <path id="sorriso-normal" class="boneco-sorriso" d="M -10 -64 Q 0 -56 10 -64"/>
+          <path id="sorriso-feliz" class="boneco-sorriso-feliz" d="M -14 -66 Q 0 -44 14 -66 Z" display="none"/>
+        </g>
+      </svg>
+
+      <canvas id="efeitos" aria-hidden="true"></canvas>
+
+      <!-- Mensagem de conquista -->
+      <div id="mensagem" hidden>
+        <svg viewBox="0 0 100 100" aria-hidden="true"><polygon points="50,6 62,38 96,38 68,58 79,92 50,72 21,92 32,58 4,38 38,38" fill="#F6C453" stroke="#8A5A00" stroke-width="5" stroke-linejoin="round"/></svg>
+        <span id="mensagem-texto">Muito bem! Você conseguiu!</span>
+        <svg viewBox="0 0 100 100" aria-hidden="true"><polygon points="50,6 62,38 96,38 68,58 79,92 50,72 21,92 32,58 4,38 38,38" fill="#F6C453" stroke="#8A5A00" stroke-width="5" stroke-linejoin="round"/></svg>
+      </div>
+
+      <!-- CURSOR VIRTUAL: mostra onde as suas mãos estão. -->
+      <div id="cursor-mao" aria-hidden="true" hidden></div>
+    </div>
+  </section>
+
+  <script>
+  /* ==========================================================================
+     OUTRAS CONFIGURAÇÕES (técnicas — normalmente não precisa mexer)
+     A dificuldade fica lá no topo do arquivo, no bloco "AJUSTE DE DIFICULDADE".
+     ========================================================================== */
+  // Versão da MediaPipe Tasks Vision (o JS e o WASM precisam ser da MESMA versão).
+  const MEDIAPIPE_VERSION = '1.0.1';
+  // Modelo "lite": o mais leve e rápido.
+  const POSE_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
+  // Quão "certo" o modelo precisa estar de que está vendo o punho (0 a 1).
+  const MIN_VISIBILITY = 0.5;
+  // Se os ombros não aparecerem, usamos a imagem inteira menos esta margem.
+  const CAMERA_EDGE_MARGIN = 0.15;
+  // Depois de quanto tempo (ms) sem ver a pessoa mostramos um aviso.
+  const NO_PERSON_TIMEOUT_MS = 1500;
+  // Quanto tempo a mensagem "Muito bem!" fica na tela (ms).
+  const SUCCESS_MESSAGE_MS = 2500;
+  // [NÍVEL] A mensagem de "subiu de nível" é mais longa: fica mais tempo (ms).
+  const LEVEL_MESSAGE_MS = 5000;
+  // [NÍVEL] Só conta como "soltou antes da hora" se o anel já tinha enchido
+  // pelo menos esta fração (0.15 ≈ meio segundo segurando).
+  const SOLTADA_MIN_PROGRESSO = 0.15;
+  // Duração da comemoração do boneco antes de sumir e renascer (ms).
+  const CELEBRATE_MS = 700;
+  const DISAPPEAR_MS = 500;
+  const APPEAR_MS = 600;
+  // O boneco renasce longe do cursor: no mínimo esta fração da diagonal da tela.
+  const RESPAWN_MIN_DISTANCE = 0.3;
+
+  /* ==========================================================================
+     ESTADO DO JOGO
+     ========================================================================== */
+  const $ = (id) => document.getElementById(id);
+  const reduzirMovimento = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+  const estado = {
+    modo: 'camera',          // 'camera' ou 'mouse'
+    rodando: false,
+    pontos: 0,
+
+    cursorAlvo: null,        // onde as mãos estão AGORA (0 a 1), sem suavizar
+    cursorAceito: null,      // último alvo aceito (depois da zona morta)
+    cursor: { x: 0.5, y: 0.5 },   // posição suavizada (0 a 1)
+    cursorVisivel: false,
+    ultimaVezVisto: 0,
+    maoAtiva: null,          // 'esquerda', 'direita' ou 'ambas'
+    fonteCursor: null,       // ponto usado como cursor, em pixels da câmera
+    corpo: null,             // centro e largura dos ombros (suavizados)
+
+    progresso: 0,            // 0 a 1: quanto do tempo de segurar já passou
+    segurando: false,
+    ultimoDentro: -Infinity, // última vez que o cursor esteve sobre o boneco
+    ultimoSomToque: 0,
+  };
+
+  // O boneco e o seu "jeito de andar".
+  const boneco = {
+    x: 0, y: 0,              // centro do boneco, em pixels do palco
+    angulo: 0,               // direção em que está andando (radianos)
+    velocidade: 0,           // px/s atual (acelera e freia devagar)
+    alvo: null,              // ponto para onde está indo agora
+    fase: 'surgindo',        // 'andando' | 'comemorando' | 'surgindo'
+    tempoFase: 0,
+    passo: 0,                // ciclo da caminhada (balanço das pernas)
+    escalaExtra: 1,
+    opacidade: 1,
+    bracos: 0,               // 0 = abaixados, 1 = abertos, 2 = para cima
+  };
+
+  // Medidas do palco (recalculadas quando a janela muda de tamanho).
+  const palco = { largura: 0, altura: 0, alturaBoneco: 180, raioCaptura: HOLD_RADIUS_PX };
+
+  const video = $('video');
+  let poseLandmarker = null;   // o "detector de pose" da MediaPipe
+  let promessaModelo = null;   // evita carregar o modelo duas vezes
+  let fluxoCamera = null;      // o MediaStream da webcam
+  let ultimoTempoVideo = -1;
+  let ultimoTimestamp = 0;
+  let ultimoQuadro = 0;
+  let idLoop = 0;
+  let errosSeguidos = 0;
+  let audio = null;            // AudioContext (criado no clique em "Começar")
+  let particulas = [];         // estrelinhas da comemoração
+  let timerMensagem = 0;
+
+  // [PAINEL] Quem está jogando e a sessão em andamento.
+  let pacienteAtual = null;    // { id, nome } se quem joga é paciente cadastrado; senão null
+  let sessaoAtual = null;      // registro da sessão (vai para o localStorage)
+  let sessaoMs = 0;            // tempo de uso desta sessão, em ms
+  let tentativaMs = 0;         // tempo gasto na captura atual, em ms
+  let ultimoSalvamento = 0;
+
+  // [AO VIVO] Quem está jogando agora e a sessão ao vivo desta aba.
+  let jogadorAtual = null;     // { nome, cadastrado, pacienteId }
+  // [NÍVEL] Dificuldade adaptativa desta sessão.
+  const dificuldade = {
+    nivel: NIVEL_INICIAL,          // nível de agora
+    nivelInicial: NIVEL_INICIAL,   // nível em que a sessão começou
+    nivelMaximo: NIVEL_INICIAL,    // maior nível alcançado na sessão
+    progresso: 0,                  // a "barrinha": ao chegar a 1, sobe um nível
+    capturas: [],                  // desempenho de cada captura: { tempo, soltadas }
+    alvo: valoresDoNivel(NIVEL_INICIAL),    // valores do nível de agora
+    atual: valoresDoNivel(NIVEL_INICIAL),   // valores em uso (deslizam até o alvo)
+  };
+  let soltadasNaTentativa = 0;     // vezes que soltou antes de completar esta captura
+
+  // [ACOLHER] Resposta de "Como você está se sentindo hoje?" e estado do som.
+  let bemEstarAtual = null;    // 'bem', 'dor', 'dificuldade' ou null
+  let somLigado = true;        // lido do localStorage no início
+  let falando = false;         // a voz está lendo alguma coisa agora?
+  let timerSaidaMensagem = 0;
+  let sessaoAoVivo = null;     // o que vai para localStorage[ACTIVE_SESSION_KEY]
+  let timerBatimento = 0;
+  // Canal de avisos entre abas. Navegadores antigos não têm: fica null e o
+  // painel percebe as mudanças pelos outros caminhos (veja publishLiveSession).
+  const canalAoVivo = 'BroadcastChannel' in window ? new BroadcastChannel(LIVE_CHANNEL_NAME) : null;
+
+  /* ==========================================================================
+     TROCA DE TELAS E ANÚNCIOS
+     ========================================================================== */
+  function mostrarTela(id) {
+    for (const tela of document.querySelectorAll('body > .tela')) {
+      tela.hidden = tela.id !== id;
+    }
+    document.body.dataset.tela = id;   // [ACOLHER] o CSS mostra/esconde logo, som e nome
+    pararFala();                       // [ACOLHER] a voz não continua na tela seguinte
+    // Leva o foco para o título da nova tela (ajuda teclado e leitor de tela).
+    const foco = document.querySelector(`#${id} [tabindex="-1"]`);
+    if (foco) foco.focus({ preventScroll: true });
+  }
+
+  // Fala uma frase no leitor de tela (sem mudar nada na tela).
+  function anunciar(texto) {
+    const regiao = $('anuncio');
+    regiao.textContent = '';
+    setTimeout(() => { regiao.textContent = texto; }, 50);
+  }
+
+  // Troca a frase grande de instrução (só se mudou, para não repetir no leitor).
+  function definirInstrucao(texto, alerta = false) {
+    const el = $('instrucao-texto');
+    if (el.textContent !== texto) el.textContent = texto;
+    $('instrucao').classList.toggle('alerta', alerta);
+  }
+
+  function textoLevarMao() {
+    if (estado.modo === 'mouse') return 'Leve o mouse até o bonequinho.';
+    return CURSOR_MODE === 'pontoMedio'
+      ? 'Junte as mãos e leve até o bonequinho.'
+      : 'Levante a mão e leve até o bonequinho.';
+  }
+
+  function textoSegundos() {
+    const s = Math.round(HOLD_DURATION_MS / 100) / 10;
+    return `${String(s).replace('.', ',')} ${s === 1 ? 'segundo' : 'segundos'}`;
+  }
+
+  /* ==========================================================================
+     SONS SUAVES (Web Audio, sem arquivos externos)
+     ========================================================================== */
+  function prepararAudio() {
+    try {
+      if (!audio) audio = new (window.AudioContext || window.webkitAudioContext)();
+      if (audio.state === 'suspended') audio.resume();
+    } catch (e) {
+      audio = null; // Sem som, sem problema.
+    }
+  }
+
+  function tocarNota(freq, inicio, duracao, volume, tipo = 'sine') {
+    const t = audio.currentTime + inicio;
+    const osc = audio.createOscillator();
+    const ganho = audio.createGain();
+    osc.type = tipo;
+    osc.frequency.value = freq;
+    // Envelope: sobe rápido e desce devagar (som macio, sem "clique").
+    ganho.gain.setValueAtTime(0.0001, t);
+    ganho.gain.exponentialRampToValueAtTime(volume, t + 0.03);
+    ganho.gain.exponentialRampToValueAtTime(0.0001, t + duracao);
+    osc.connect(ganho).connect(audio.destination);
+    osc.start(t);
+    osc.stop(t + duracao + 0.05);
+  }
+
+  function tocarSom(tipo) {
+    if (!audio || !somLigado || SOUND_VOLUME <= 0) return;   // [ACOLHER] respeita "Som desligado"
+    const v = SOUND_VOLUME;
+    if (tipo === 'toque') {
+      // Notinha bem baixa quando a mão chega no boneco.
+      tocarNota(659.25, 0, 0.3, v * 0.45);          // Mi
+    } else if (tipo === 'captura') {
+      // Arpejo de Dó maior: Dó, Mi, Sol, Dó agudo — alegre e macio.
+      [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => {
+        tocarNota(f, i * 0.15, 0.9, v);
+        tocarNota(f / 2, i * 0.15, 0.9, v * 0.4, 'triangle');
+      });
+    }
+  }
+
+  /* ==========================================================================
+     initCamera — liga a webcam
+     ========================================================================== */
+  async function initCamera() {
+    if (!window.isSecureContext) throw { tipo: 'inseguro' };
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw { tipo: 'sem-suporte' };
+    }
+    try {
+      fluxoCamera = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          facingMode: 'user',
+          width: { ideal: 640 },   // 640x480 basta e deixa tudo mais rápido
+          height: { ideal: 480 },
+          frameRate: { ideal: 30 },
+        },
+      });
+    } catch (e) {
+      throw { tipo: 'camera', erro: e };
+    }
+    video.srcObject = fluxoCamera;
+    // Espera o primeiro quadro chegar antes de continuar.
+    await new Promise((ok) => {
+      if (video.readyState >= 2) return ok();
+      video.onloadeddata = () => ok();
+    });
+    await video.play();
+    $('esqueleto').width = video.videoWidth;
+    $('esqueleto').height = video.videoHeight;
+  }
+
+  /* ==========================================================================
+     loadPoseModel — carrega a MediaPipe e o modelo de pose
+     Usamos import() dinâmico: se a internet falhar, o resto da página
+     continua funcionando e mostramos uma mensagem amigável.
+     ========================================================================== */
+  function loadPoseModel() {
+    // Se já está carregando (ou carregou), reaproveita.
+    if (!promessaModelo) {
+      promessaModelo = carregarModelo().catch((e) => {
+        promessaModelo = null; // permite tentar de novo
+        throw e;
+      });
+    }
+    return promessaModelo;
+  }
+
+  async function carregarModelo() {
+    const base = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}`;
+    try {
+      const { FilesetResolver, PoseLandmarker } = await import(`${base}/vision_bundle.mjs`);
+      const visao = await FilesetResolver.forVisionTasks(`${base}/wasm`);
+
+      const opcoes = (delegate) => ({
+        baseOptions: { modelAssetPath: POSE_MODEL_URL, delegate },
+        runningMode: 'VIDEO',
+        numPoses: 1,                 // só uma pessoa
+        minPoseDetectionConfidence: 0.5,
+        minPosePresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+
+      try {
+        // Primeiro tentamos a placa de vídeo (GPU): bem mais rápido.
+        poseLandmarker = await PoseLandmarker.createFromOptions(visao, opcoes('GPU'));
+      } catch (erroGpu) {
+        // Alguns computadores não suportam: usamos o processador (CPU).
+        console.warn('GPU indisponível, usando CPU.', erroGpu);
+        poseLandmarker = await PoseLandmarker.createFromOptions(visao, opcoes('CPU'));
+      }
+    } catch (e) {
+      throw { tipo: 'modelo', erro: e };
+    }
+  }
+
+  /* ==========================================================================
+     DAS MÃOS PARA O CURSOR
+     Recebe os 33 pontos do corpo e devolve {x, y} de 0 a 1, ou null.
+     Pontos usados: 11/12 = ombros, 13/14 = cotovelos, 15/16 = punhos.
+     ========================================================================== */
+  const PONTO = { OMBRO_E: 11, OMBRO_D: 12, COTOVELO_E: 13, COTOVELO_D: 14, PUNHO_E: 15, PUNHO_D: 16 };
+
+  function visivel(p) {
+    // Se a biblioteca não informar a visibilidade, consideramos visível.
+    return p && (p.visibility === undefined || p.visibility >= MIN_VISIBILITY);
+  }
+
+  function calcularPosicaoMao(pontos) {
+    const W = video.videoWidth, H = video.videoHeight;
+    // Convertemos para pixels e ESPELHAMOS o eixo x: a pessoa levanta a mão
+    // direita e o cursor vai para a direita, como num espelho.
+    const px = (p) => ({ x: (1 - p.x) * W, y: p.y * H });
+
+    const punhoE = pontos[PONTO.PUNHO_E], punhoD = pontos[PONTO.PUNHO_D];
+    const vE = visivel(punhoE), vD = visivel(punhoD);
+    if (!vE && !vD) { estado.maoAtiva = null; estado.fonteCursor = null; return null; }
+
+    // Referência do corpo: centro e largura dos ombros (suavizados, para o
+    // "chão" do movimento não tremer).
+    const oE = pontos[PONTO.OMBRO_E], oD = pontos[PONTO.OMBRO_D];
+    if (visivel(oE) && visivel(oD)) {
+      const a = px(oE), b = px(oD);
+      const novo = {
+        x: (a.x + b.x) / 2,
+        y: (a.y + b.y) / 2,
+        largura: Math.max(Math.hypot(a.x - b.x, a.y - b.y), W * 0.04),
+      };
+      if (!estado.corpo) estado.corpo = novo;
+      else for (const k in novo) estado.corpo[k] += (novo[k] - estado.corpo[k]) * 0.3;
+    } else {
+      estado.corpo = null;
+    }
+
+    // Qual ponto vira cursor?
+    let mao;
+    if (vE && vD) {
+      const a = px(punhoE), b = px(punhoD);
+      if (CURSOR_MODE === 'pontoMedio') {
+        // Ponto médio entre os dois punhos.
+        estado.maoAtiva = 'ambas';
+        mao = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      } else if (a.y < b.y) {
+        estado.maoAtiva = 'esquerda'; mao = a;   // mão esquerda mais alta
+      } else {
+        estado.maoAtiva = 'direita'; mao = b;
+      }
+    } else if (vE) {
+      estado.maoAtiva = 'esquerda'; mao = px(punhoE);   // só um punho aparece
+    } else {
+      estado.maoAtiva = 'direita'; mao = px(punhoD);
+    }
+    estado.fonteCursor = { x: W - mao.x, y: mao.y };   // para desenhar na câmera
+
+    let x, y;
+    if (estado.corpo) {
+      // Posição da mão RELATIVA ao corpo, em larguras de ombro. Assim funciona
+      // igual perto ou longe da câmera, e mesmo fora do centro da imagem.
+      const c = estado.corpo;
+      const rx = (mao.x - c.x) / c.largura;
+      const ry = (mao.y - c.y) / c.largura;
+      // [NÍVEL] A amplitude pedida vem do nível atual.
+      x = 0.5 + rx / (2 * dificuldade.atual.alcanceHorizontal);
+      y = 0.5 + (ry - REACH_VERTICAL_CENTER) / (2 * dificuldade.atual.alcanceVertical);
+    } else {
+      // Sem ombros: usamos a posição da mão na imagem inteira.
+      const m = CAMERA_EDGE_MARGIN;
+      x = (mao.x / W - m) / (1 - 2 * m);
+      y = (mao.y / H - m) / (1 - 2 * m);
+    }
+    return { x: limitar(x, 0, 1), y: limitar(y, 0, 1) };
+  }
+
+  /* ==========================================================================
+     detectLoop — o "coração": roda a cada quadro da tela (~60x por segundo)
+     1. Se chegou um quadro novo da câmera, pergunta à MediaPipe onde está o corpo.
+     2. Suaviza o cursor e move o boneco.
+     3. Confere se a pessoa está segurando o boneco.
+     4. Desenha tudo.
+     ========================================================================== */
+  function detectLoop(agora) {
+    if (!estado.rodando) return;
+    // [PAINEL] "real" é o tempo de verdade desde o último quadro (para o
+    // registro da sessão). "dt" é o mesmo tempo, limitado, para as animações.
+    const real = Math.min(agora - (ultimoQuadro || agora), 2000);
+    const dt = Math.min(real, 100); // ms desde o último quadro
+    ultimoQuadro = agora;
+
+    if (estado.modo === 'camera' && poseLandmarker &&
+        video.readyState >= 2 && video.currentTime !== ultimoTempoVideo) {
+      ultimoTempoVideo = video.currentTime;
+      // A MediaPipe exige tempos sempre crescentes.
+      ultimoTimestamp = Math.max(agora, ultimoTimestamp + 1);
+      let pontos = null;
+      try {
+        const resultado = poseLandmarker.detectForVideo(video, ultimoTimestamp);
+        pontos = resultado.landmarks && resultado.landmarks[0];
+        errosSeguidos = 0;
+      } catch (e) {
+        console.error('Erro na detecção:', e);
+        // Se a detecção falhar sem parar, avisamos em vez de travar calado.
+        if (++errosSeguidos > 30) {
+          estado.rodando = false;
+          encerrarSessao();          // [PAINEL] grava o que já foi feito
+          encerrarSessaoAoVivo();    // [AO VIVO]
+          pararCamera();
+          mostrarErro({ tipo: 'modelo', erro: e });
+          return;
+        }
+      }
+      const posicao = pontos ? calcularPosicaoMao(pontos) : null;
+      if (posicao) {
+        estado.cursorAlvo = posicao;
+        estado.ultimaVezVisto = agora;
+      }
+      desenharEsqueleto(pontos);
+    }
+
+    // Está vendo a pessoa (ou o mouse)?
+    const vendo = estado.cursorAlvo !== null && (estado.modo === 'mouse' ||
+                  (agora - estado.ultimaVezVisto) < NO_PERSON_TIMEOUT_MS);
+    // O cursor acabou de aparecer: começa direto na mão (sem "voar" do meio).
+    if (vendo && !estado.cursorVisivel) {
+      estado.cursor = { x: estado.cursorAlvo.x, y: estado.cursorAlvo.y };
+    }
+    estado.cursorVisivel = vendo;
+
+    atualizarDificuldade(dt);           // [NÍVEL] valores deslizam até os do nível
+    smoothCursor(dt);
+    moveStickFigure(dt);
+    contarTempoDaSessao(real, agora);   // [PAINEL]
+    checkHold(dt, agora);
+    atualizarInstrucao();
+    desenharCena();
+    desenharEfeitos(dt);
+
+    idLoop = requestAnimationFrame(detectLoop);
+  }
+
+  /* ==========================================================================
+     smoothCursor — interpolação (lerp) do cursor virtual
+     Absorve os tremores naturais da mão: o cursor "desliza" até a mão.
+     ========================================================================== */
+  function smoothCursor(dt) {
+    const alvo = estado.cursorAlvo;
+    if (!alvo) return;
+    // Zona morta: ignora tremores minúsculos da detecção.
+    const aceito = estado.cursorAceito;
+    if (!aceito || Math.hypot(alvo.x - aceito.x, alvo.y - aceito.y) > CURSOR_DEAD_ZONE) {
+      estado.cursorAceito = { x: alvo.x, y: alvo.y };
+    }
+    // CURSOR_SMOOTHING é a fração percorrida por quadro a 60 fps.
+    // A conta abaixo deixa a suavização igual em qualquer taxa de quadros.
+    const k = 1 - Math.pow(1 - CURSOR_SMOOTHING, dt / (1000 / 60));
+    estado.cursor.x += (estado.cursorAceito.x - estado.cursor.x) * k;
+    estado.cursor.y += (estado.cursorAceito.y - estado.cursor.y) * k;
+  }
+
+  /* ==========================================================================
+     moveStickFigure — o boneco passeia sozinho, bem devagar
+     Ele sorteia um ponto de destino e vai virando AOS POUCOS na direção dele
+     (curvas suaves, nunca vira de repente). Perto do destino, sorteia outro.
+     ========================================================================== */
+  function moveStickFigure(dt) {
+    const s = dt / 1000; // segundos
+    boneco.tempoFase += dt;
+
+    // --- Comemorando: pula de alegria, depois some e renasce em outro lugar.
+    if (boneco.fase === 'comemorando') {
+      const t = boneco.tempoFase;
+      boneco.bracos += (2 - boneco.bracos) * suavizar(dt, 120);
+      if (t < CELEBRATE_MS) {
+        boneco.escalaExtra = 1 + 0.15 * Math.sin(Math.min(t / CELEBRATE_MS, 1) * Math.PI / 2);
+        boneco.opacidade = 1;
+      } else {
+        const u = Math.min((t - CELEBRATE_MS) / DISAPPEAR_MS, 1);
+        boneco.escalaExtra = 1.15 - 0.5 * u;
+        boneco.opacidade = 1 - u;
+        if (u >= 1) respawnStickFigure();
+      }
+      if (reduzirMovimento.matches) boneco.escalaExtra = 1;
+      return;
+    }
+
+    // --- Surgindo: aparece devagar (e já vai andando).
+    if (boneco.fase === 'surgindo') {
+      const u = Math.min(boneco.tempoFase / APPEAR_MS, 1);
+      boneco.opacidade = u;
+      boneco.escalaExtra = reduzirMovimento.matches ? 1 : 0.6 + 0.4 * (1 - Math.pow(1 - u, 3));
+      if (u >= 1) { boneco.fase = 'andando'; boneco.tempoFase = 0; }
+    }
+
+    // --- Andando.
+    // Velocidade: mais devagar quando está sendo segurado. Acelera e freia
+    // aos poucos (nada de arrancadas).
+    // [NÍVEL] A velocidade vem do nível atual.
+    const velMax = dificuldade.atual.velocidade * (estado.segurando ? dificuldade.atual.fatorSegurando : 1);
+    boneco.velocidade += (velMax - boneco.velocidade) * suavizar(dt, 600);
+
+    // Chegou perto do destino? Sorteia outro.
+    if (!boneco.alvo || Math.hypot(boneco.alvo.x - boneco.x, boneco.alvo.y - boneco.y) < 40) {
+      boneco.alvo = sortearDestino();
+    }
+
+    // Vira devagar na direção do destino (limite de graus por segundo).
+    const desejado = Math.atan2(boneco.alvo.y - boneco.y, boneco.alvo.x - boneco.x);
+    let diferenca = desejado - boneco.angulo;
+    diferenca = Math.atan2(Math.sin(diferenca), Math.cos(diferenca)); // entre -180° e 180°
+    const giroMax = STICK_FIGURE_TURN_RATE * Math.PI / 180 * s;
+    boneco.angulo += limitar(diferenca, -giroMax, giroMax);
+
+    // Anda.
+    boneco.x += Math.cos(boneco.angulo) * boneco.velocidade * s;
+    boneco.y += Math.sin(boneco.angulo) * boneco.velocidade * s;
+
+    // Nunca sai da tela. Se encostar na borda, escolhe outro destino.
+    const lim = limitesBoneco();
+    const x = limitar(boneco.x, lim.xMin, lim.xMax);
+    const y = limitar(boneco.y, lim.yMin, lim.yMax);
+    if (x !== boneco.x || y !== boneco.y) {
+      boneco.x = x; boneco.y = y;
+      boneco.alvo = sortearDestino();
+    }
+
+    // Caminhada: o ciclo das pernas acompanha a velocidade.
+    boneco.passo += boneco.velocidade * s * 0.14;
+    const bracosAlvo = estado.segurando ? 1 : 0;
+    boneco.bracos += (bracosAlvo - boneco.bracos) * suavizar(dt, 250);
+    boneco.escalaExtra += (1 - boneco.escalaExtra) * suavizar(dt, 200);
+  }
+
+  // Sorteia um destino dentro da tela, não muito perto de onde o boneco está.
+  function sortearDestino() {
+    const lim = limitesBoneco();
+    const folga = 30; // destinos um pouco para dentro: menos encostadas na borda
+    const minimo = Math.min(palco.largura, palco.altura) * 0.3;
+    let melhor = null;
+    for (let i = 0; i < 12; i++) {
+      const p = {
+        x: aleatorio(lim.xMin + folga, lim.xMax - folga),
+        y: aleatorio(lim.yMin + folga, lim.yMax - folga),
+      };
+      if (Math.hypot(p.x - boneco.x, p.y - boneco.y) >= minimo) return p;
+      melhor = p;
+    }
+    return melhor;
+  }
+
+  /* ==========================================================================
+     checkHold — a mão está sobre o boneco? Conta os 3 segundos.
+     Se sair, o anel esvazia devagar (sem punição). Se voltar antes de
+     esvaziar, continua de onde estava.
+     ========================================================================== */
+  function checkHold(dt, agora) {
+    if (boneco.fase !== 'andando') {
+      estado.segurando = false;
+      if (boneco.fase === 'surgindo') estado.progresso = 0;
+      return;
+    }
+    const cx = estado.cursor.x * palco.largura;
+    const cy = estado.cursor.y * palco.altura;
+    const emCima = estado.cursorVisivel &&
+                   Math.hypot(cx - boneco.x, cy - boneco.y) <= palco.raioCaptura;
+
+    if (emCima) {
+      if (!estado.segurando && agora - estado.ultimoSomToque > 1500) {
+        tocarSom('toque');
+        estado.ultimoSomToque = agora;
+      }
+      estado.segurando = true;
+      estado.ultimoDentro = agora;
+      estado.progresso += dt / HOLD_DURATION_MS;
+    } else if (agora - estado.ultimoDentro > HOLD_GRACE_MS) {
+      // Tirou a mão de verdade: o anel esvazia suavemente.
+      // [NÍVEL] Se já estava segurando há um tempinho, conta como "soltou antes
+      // da hora" (um dos sinais de dificuldade). Nada é mostrado à pessoa.
+      if (estado.segurando && estado.progresso > SOLTADA_MIN_PROGRESSO) soltadasNaTentativa += 1;
+      estado.segurando = false;
+      estado.progresso = Math.max(0, estado.progresso - dt / HOLD_RESET_MS);
+    }
+    // (Dentro do tempo de tolerância, o progresso só fica parado.)
+
+    if (estado.progresso >= 1) onCapture();
+  }
+
+  /* ==========================================================================
+     onCapture — conseguiu! Festa: brilho, estrelinhas, som e mensagem.
+     ========================================================================== */
+  function onCapture() {
+    estado.progresso = 1;
+    estado.segurando = false;
+    boneco.fase = 'comemorando';
+    boneco.tempoFase = 0;
+    $('sorriso-normal').setAttribute('display', 'none');
+    $('sorriso-feliz').removeAttribute('display');
+
+    updateScore(estado.pontos + 1);
+    // [NÍVEL] Quanto tempo esta captura levou e quantas vezes a pessoa soltou
+    // antes de conseguir. A cada N capturas isso decide se o nível sobe.
+    const tempoDaCaptura = Math.round(tentativaMs / 100) / 10;   // segundos
+    const subiuDeNivel = registrarDesempenho(tempoDaCaptura, soltadasNaTentativa);
+    tentativaMs = 0;
+    soltadasNaTentativa = 0;
+    registrarCaptura(tempoDaCaptura);   // [PAINEL] conta a captura na sessão e grava
+    baterCoracao();                // [AO VIVO] o painel vê a captura na hora
+    tocarSom('captura');
+    soltarEstrelas(boneco.x, boneco.y);
+
+    // Mensagem grande e carinhosa, que aparece e some devagar. [ACOLHER]
+    // [NÍVEL] Se o nível subiu, a frase conta isso, sempre de um jeito positivo.
+    const frase = subiuDeNivel
+      ? MENSAGENS_DE_NIVEL[(dificuldade.nivel - 2 + MENSAGENS_DE_NIVEL.length) % MENSAGENS_DE_NIVEL.length]
+      : CAPTURE_MESSAGES[(estado.pontos - 1) % CAPTURE_MESSAGES.length];
+    const msg = $('mensagem');
+    clearTimeout(timerMensagem);
+    clearTimeout(timerSaidaMensagem);
+    $('mensagem-texto').textContent = frase;
+    msg.classList.remove('saindo');
+    msg.classList.toggle('longa', subiuDeNivel);
+    msg.hidden = true;
+    void msg.offsetWidth;          // reinicia a animação de entrada
+    msg.hidden = false;
+    timerMensagem = setTimeout(() => {
+      msg.classList.add('saindo');                       // vai sumindo…
+      timerSaidaMensagem = setTimeout(() => { msg.hidden = true; }, 600);
+    }, subiuDeNivel ? LEVEL_MESSAGE_MS : SUCCESS_MESSAGE_MS);
+
+    const pontos = estado.pontos === 1 ? '1 ponto' : `${estado.pontos} pontos`;
+    anunciar(`${frase} Você tem ${pontos}.`);
+  }
+
+  /* ==========================================================================
+     respawnStickFigure — o boneco renasce num ponto aleatório
+     (longe do cursor, para a pessoa precisar se mexer de novo)
+     ========================================================================== */
+  function respawnStickFigure() {
+    const lim = limitesBoneco();
+    const cx = estado.cursor.x * palco.largura;
+    const cy = estado.cursor.y * palco.altura;
+    const minimo = Math.hypot(palco.largura, palco.altura) * RESPAWN_MIN_DISTANCE;
+    let melhor = null, maiorDistancia = -1;
+    for (let i = 0; i < 25; i++) {
+      const p = { x: aleatorio(lim.xMin, lim.xMax), y: aleatorio(lim.yMin, lim.yMax) };
+      const d = Math.hypot(p.x - cx, p.y - cy);
+      if (d > maiorDistancia) { melhor = p; maiorDistancia = d; }
+      if (d >= minimo) break;
+    }
+    boneco.x = melhor.x;
+    boneco.y = melhor.y;
+    boneco.angulo = Math.random() * Math.PI * 2;
+    boneco.velocidade = 0;
+    boneco.alvo = sortearDestino();
+    boneco.fase = 'surgindo';
+    boneco.tempoFase = 0;
+    boneco.bracos = 0;
+    boneco.opacidade = 0;
+    estado.progresso = 0;
+    $('sorriso-feliz').setAttribute('display', 'none');
+    $('sorriso-normal').removeAttribute('display');
+  }
+
+  /* ==========================================================================
+     updateScore — mostra os pontos (com um "pulinho" no número)
+     ========================================================================== */
+  function updateScore(valor) {
+    estado.pontos = valor;
+    const el = $('pontos');
+    el.textContent = valor;
+    el.classList.remove('pulo');
+    void el.offsetWidth;           // reinicia a animação
+    el.classList.add('pulo');
+  }
+
+  /* ==========================================================================
+     [NÍVEL] DIFICULDADE ADAPTATIVA
+
+     A IDEIA
+       • Toda sessão começa no NIVEL_INICIAL (fácil, para aquecer).
+       • A cada AVALIAR_A_CADA_N_CAPTURAS capturas o jogo olha as últimas e
+         decide como a pessoa está: "indo bem", "meio-termo" ou "com
+         dificuldade".
+       • Cada situação enche a "barrinha" num ritmo diferente (RITMO_SUBIDA_…).
+         Barrinha cheia = sobe UM nível. Nunca mais que um por avaliação.
+       • Ao mudar de nível, os valores não pulam: deslizam devagar
+         (TRANSICAO_DE_NIVEL_MS) até os novos.
+       • A pessoa só é avisada quando sobe, e sempre com uma frase positiva.
+         Se está com dificuldade, o jogo apenas sobe mais devagar — sem dizer.
+
+     O tempo de segurar (HOLD_DURATION_MS) NUNCA muda com o nível.
+     ========================================================================== */
+
+  // Quanto vale cada parâmetro num nível: proporcional entre o valor do nível
+  // mais fácil e o limite seguro. Por construção, nunca passa do limite.
+  function valoresDoNivel(nivel) {
+    const fracao = (limitar(nivel, NIVEL_MIN, NIVEL_MAX) - NIVEL_MIN) / Math.max(1, NIVEL_MAX - NIVEL_MIN);
+    const entre = (facil, limite) => facil + (limite - facil) * fracao;
+    return {
+      velocidade: entre(STICK_FIGURE_SPEED, LIMITE_SEGURO_VELOCIDADE),
+      fatorSegurando: entre(HELD_SPEED_FACTOR, LIMITE_SEGURO_FATOR_SEGURANDO),
+      raio: entre(HOLD_RADIUS_PX, LIMITE_SEGURO_RAIO),
+      alcanceHorizontal: entre(REACH_HORIZONTAL, LIMITE_SEGURO_ALCANCE_HORIZONTAL),
+      alcanceVertical: entre(REACH_VERTICAL, LIMITE_SEGURO_ALCANCE_VERTICAL),
+    };
+  }
+
+  function relatouDorOuDificuldade() {
+    return bemEstarAtual === 'dor' || bemEstarAtual === 'dificuldade';
+  }
+
+  /* --------------------------------------------------------------------------
+     aplicarNivel — passa a valer um nível e devolve os valores efetivos dele
+     (velocidade, raio, amplitude…). Os valores em uso deslizam até eles.
+     -------------------------------------------------------------------------- */
+  function aplicarNivel(nivel) {
+    dificuldade.nivel = limitar(Math.round(nivel), NIVEL_MIN, NIVEL_MAX);
+    dificuldade.nivelMaximo = Math.max(dificuldade.nivelMaximo, dificuldade.nivel);
+    const valores = valoresDoNivel(dificuldade.nivel);
+    // Cautela: quem relatou dor ou dificuldade não precisa esticar mais o braço
+    // só porque o nível subiu (a não ser que AMPLITUDE_SOBE_COM_DOR esteja ligado).
+    if (relatouDorOuDificuldade() && !AMPLITUDE_SOBE_COM_DOR) {
+      const base = valoresDoNivel(dificuldade.nivelInicial);
+      valores.alcanceHorizontal = base.alcanceHorizontal;
+      valores.alcanceVertical = base.alcanceVertical;
+    }
+    dificuldade.alvo = valores;
+    return valores;
+  }
+
+  // Começo de sessão: volta ao nível inicial, já com os valores certos.
+  function iniciarDificuldade() {
+    dificuldade.nivelInicial = limitar(NIVEL_INICIAL, NIVEL_MIN, NIVEL_MAX);
+    dificuldade.nivelMaximo = dificuldade.nivelInicial;
+    dificuldade.progresso = 0;
+    dificuldade.capturas = [];
+    soltadasNaTentativa = 0;
+    dificuldade.atual = { ...aplicarNivel(dificuldade.nivelInicial) };   // sem deslizar
+    atualizarRaioDeCaptura(true);
+  }
+
+  // Como a pessoa está indo, pelas últimas capturas:
+  // 'bem', 'meio-termo', 'dificuldade' ou 'muita-dificuldade'.
+  function avaliarDesempenho() {
+    const ultimas = dificuldade.capturas.slice(-CAPTURAS_NA_MEDIA);
+    const tempoMedio = ultimas.reduce((soma, c) => soma + c.tempo, 0) / ultimas.length;
+    const soltadasMedia = ultimas.reduce((soma, c) => soma + c.soltadas, 0) / ultimas.length;
+    const sessaoLonga = sessaoMs / 60000 > SESSAO_LONGA_MIN;
+
+    if (tempoMedio > LIMIAR_MUITO_LENTO_SEG) return 'muita-dificuldade';
+    if (relatouDorOuDificuldade() || sessaoLonga ||
+        tempoMedio > LIMIAR_LENTO_SEG || soltadasMedia > LIMITE_SOLTADAS_POR_CAPTURA) return 'dificuldade';
+    if (tempoMedio < LIMIAR_RAPIDO_SEG && soltadasMedia <= LIMITE_SOLTADAS_POR_CAPTURA / 2) return 'bem';
+    return 'meio-termo';
+  }
+
+  /* --------------------------------------------------------------------------
+     calcularNivel — depois de uma avaliação, diz em que nível o jogo deve
+     ficar. Devolve { nivel, situacao }. Sobe (ou desce) no máximo UM degrau.
+     -------------------------------------------------------------------------- */
+  function calcularNivel() {
+    const situacao = avaliarDesempenho();
+    let nivel = dificuldade.nivel;
+
+    if (situacao === 'muita-dificuldade' && DESCER_SE_MUITA_DIFICULDADE) {
+      // Alívio silencioso: um degrau para baixo, nunca abaixo do começo.
+      dificuldade.progresso = 0;
+      nivel = Math.max(dificuldade.nivelInicial, nivel - 1);
+    } else {
+      const ritmo = situacao === 'bem' ? RITMO_SUBIDA_NORMAL
+        : situacao === 'meio-termo' ? RITMO_SUBIDA_MEIO_TERMO
+        : SUBIR_MESMO_COM_DIFICULDADE ? RITMO_SUBIDA_COM_DIFICULDADE
+        : 0;                                           // com dificuldade e sem subir: fica parado
+      dificuldade.progresso += ritmo;
+      if (dificuldade.progresso >= 1 && nivel < NIVEL_MAX) {
+        nivel += 1;
+        dificuldade.progresso -= 1;
+      }
+      dificuldade.progresso = Math.min(dificuldade.progresso, 1);   // não guarda "crédito" para pular degraus
+    }
+    return { nivel, situacao };
+  }
+
+  // Chamada a cada captura: anota o desempenho e, a cada N capturas, reavalia.
+  // Devolve true só quando o nível SUBIU (para o jogo mostrar a frase positiva).
+  function registrarDesempenho(tempoSeg, soltadas) {
+    dificuldade.capturas.push({ tempo: tempoSeg, soltadas });
+    if (dificuldade.capturas.length % AVALIAR_A_CADA_N_CAPTURAS !== 0) return false;
+    const antes = dificuldade.nivel;
+    const { nivel } = calcularNivel();
+    if (nivel !== antes) aplicarNivel(nivel);
+    return nivel > antes;
+  }
+
+  // A cada quadro: os valores em uso deslizam devagar até os do nível atual.
+  function atualizarDificuldade(dt) {
+    const k = suavizar(dt, TRANSICAO_DE_NIVEL_MS);
+    for (const chave in dificuldade.alvo) {
+      dificuldade.atual[chave] += (dificuldade.alvo[chave] - dificuldade.atual[chave]) * k;
+    }
+    atualizarRaioDeCaptura(false);
+  }
+
+  // O círculo da área de captura acompanha o raio do nível
+  // (e é sempre maior que o próprio boneco).
+  function atualizarRaioDeCaptura(forcar) {
+    const raio = Math.max(dificuldade.atual.raio, palco.alturaBoneco * 0.6);
+    if (!forcar && Math.abs(raio - palco.raioCaptura) < 0.25) return;
+    palco.raioCaptura = raio;
+    for (const id of ['area-brilho', 'area-trilha', 'area-progresso']) {
+      $(id).setAttribute('r', raio.toFixed(1));
+    }
+    $('area-progresso').setAttribute('stroke-dasharray', (2 * Math.PI * raio).toFixed(1));
+  }
+
+  /* ==========================================================================
+     [PAINEL] QUEM ESTÁ JOGANDO
+     ========================================================================== */
+
+  // A lista de pacientes vem da constante REGISTERED_PATIENTS (topo do
+  // arquivo). Uma cópia vai para o localStorage, para o painel enxergar os
+  // mesmos pacientes.
+  function carregarPacientes() {
+    try {
+      localStorage.setItem(STORAGE_KEY_PATIENTS, JSON.stringify(DEFAULT_PATIENTS));
+    } catch (e) {
+      console.warn('localStorage indisponível: os resultados não serão gravados.', e);
+    }
+    return DEFAULT_PATIENTS;
+  }
+
+  // Monta um botão grande para cada paciente (atalho: um toque, sem digitar).
+  function montarTelaPaciente() {
+    const lista = $('lista-pacientes');
+    lista.replaceChildren();
+    for (const paciente of carregarPacientes()) {
+      const botao = document.createElement('button');
+      botao.type = 'button';
+      botao.className = 'botao-paciente';
+      const iniciais = document.createElement('span');
+      iniciais.className = 'iniciais';
+      iniciais.setAttribute('aria-hidden', 'true');
+      iniciais.textContent = paciente.nome.trim().split(/\s+/).slice(0, 2).map((p) => p[0]).join('').toUpperCase();
+      const nome = document.createElement('span');
+      nome.textContent = paciente.nome;
+      botao.append(iniciais, nome);
+      botao.addEventListener('click', () => {
+        $('campo-nome').value = paciente.nome;
+        atualizarBotaoContinuar();
+        definirJogador(paciente.nome);
+      });
+      lista.append(botao);
+    }
+    $('link-profissional').href = ADMIN_PAGE_URL;
+    $('campo-nome').maxLength = PLAYER_NAME_MAX_LENGTH;
+  }
+
+  // [AO VIVO] "Continuar" só liga quando há um nome escrito.
+  function atualizarBotaoContinuar() {
+    const temNome = $('campo-nome').value.trim().length > 0;
+    $('botao-continuar').disabled = !temNome;
+    const dica = temNome ? 'Pronto! Toque em Continuar.' : 'Escreva seu nome para continuar.';
+    if ($('dica-nome').textContent !== dica) $('dica-nome').textContent = dica;
+  }
+
+  // [AO VIVO] Define quem vai jogar, a partir do nome digitado ou tocado.
+  // Se o nome for de um paciente cadastrado ("thais g" também vale para
+  // "Thaís G"), a sessão entra no histórico dele. Se não for, a pessoa é
+  // "visitante": aparece só na sessão ao vivo e nada fica gravado.
+  function definirJogador(nomeDigitado) {
+    const nome = String(nomeDigitado).trim().replace(/\s+/g, ' ').slice(0, PLAYER_NAME_MAX_LENGTH);
+    if (!nome) return;
+    const paciente = DEFAULT_PATIENTS.find((p) => normalizarNome(p.nome) === normalizarNome(nome)) || null;
+    pacienteAtual = paciente;
+    jogadorAtual = {
+      nome: paciente ? paciente.nome : nome,
+      cadastrado: paciente !== null,
+      pacienteId: paciente ? paciente.id : null,
+    };
+    $('jogador-nome').textContent = jogadorAtual.nome;
+    $('botao-comecar').disabled = false;
+    bemEstarAtual = null;
+    prepararTelaBemEstar();        // [ACOLHER] saudação + recado + "como você está?"
+    mostrarTela('tela-bem-estar');
+  }
+
+  /* ==========================================================================
+     [ACOLHER] SAUDAÇÃO, BEM-ESTAR, RECADO E PEQUENAS VITÓRIAS
+     ========================================================================== */
+
+  // Troca {n}, {profissional}… pelos valores. Ex.: preencher('{n} vezes', { n: 3 })
+  function preencher(texto, valores) {
+    return texto.replace(/\{(\w+)\}/g, (_, chave) => (chave in valores ? valores[chave] : ''));
+  }
+
+  // Põe os textos da constante TEXTS nos elementos marcados com data-texto="…".
+  function aplicarTextos() {
+    for (const el of document.querySelectorAll('[data-texto]')) {
+      const texto = TEXTS[el.dataset.texto];
+      if (texto) el.textContent = texto;
+    }
+    $('marca-nome').textContent = PRODUCT_NAME;
+    document.title = `${PRODUCT_NAME} · Segure o bonequinho`;
+  }
+
+  // "Bom dia" (5h–12h), "Boa tarde" (12h–18h) ou "Boa noite".
+  function saudacaoDoHorario(data = new Date()) {
+    const hora = data.getHours();
+    if (hora >= 5 && hora < 12) return 'Bom dia';
+    if (hora >= 12 && hora < 18) return 'Boa tarde';
+    return 'Boa noite';
+  }
+
+  // Rostinhos dos botões de bem-estar (desenhados aqui, sem depender de emoji,
+  // para aparecerem iguais em qualquer computador).
+  function iconeRosto(tipo) {
+    const bocas = {
+      bem: '<path d="M20 38 Q32 50 44 38"/>',                 // sorriso
+      dor: '<path d="M21 42 H43"/>',                           // boca reta
+      dificuldade: '<path d="M20 46 Q32 36 44 46"/><path d="M16 23 L26 19 M48 23 L38 19"/>',  // preocupado
+    };
+    return '<svg viewBox="0 0 64 64" aria-hidden="true">' +
+      '<circle cx="32" cy="32" r="28" fill="#FFE3B0" stroke="#3B3B3B" stroke-width="4"/>' +
+      '<circle cx="23" cy="29" r="3.5" fill="#3B3B3B"/><circle cx="41" cy="29" r="3.5" fill="#3B3B3B"/>' +
+      `<g fill="none" stroke="#3B3B3B" stroke-width="4" stroke-linecap="round">${bocas[tipo] || bocas.dor}</g></svg>`;
+  }
+
+  // Monta os três botões grandes: rosto + texto.
+  function montarBemEstar() {
+    const caixa = $('opcoes-bem-estar');
+    caixa.replaceChildren();
+    for (const opcao of WELLBEING_OPTIONS) {
+      const botao = document.createElement('button');
+      botao.type = 'button';
+      botao.className = `opcao-bem-estar ${opcao.id}`;
+      botao.innerHTML = iconeRosto(opcao.id);          // desenho fixo, sem dados do usuário
+      const texto = document.createElement('span');
+      texto.textContent = opcao.texto;
+      botao.append(texto);
+      botao.addEventListener('click', () => escolherBemEstar(opcao.id));
+      caixa.append(botao);
+    }
+  }
+
+  function prepararTelaBemEstar() {
+    $('saudacao-titulo').textContent = `${saudacaoDoHorario()}, ${jogadorAtual.nome}!`;
+    // Recado do profissional (só pacientes cadastrados têm).
+    const recado = jogadorAtual.cadastrado ? lerRecado(jogadorAtual.pacienteId) : null;
+    $('recado').hidden = !recado;
+    if (recado) {
+      $('recado-de').textContent = preencher(TEXTS.recadoIntro, { profissional: recado.autor || 'Quem cuida de você' });
+      $('recado-texto').textContent = `“${recado.texto}”`;
+      marcarRecadoVisto(jogadorAtual.pacienteId);      // o painel mostra "visto em…"
+    }
+  }
+
+  function escolherBemEstar(id) {
+    bemEstarAtual = id;
+    // Quem disse que está com dor ou dificuldade recebe uma frase de cuidado.
+    $('aviso-ritmo').textContent = id === 'bem' ? TEXTS.semPressa : TEXTS.cuidadoExtra;
+    mostrarVitoria($('vitoria'), $('vitoria-texto'), false);
+    mostrarTela('tela-inicial');
+  }
+
+  // ---- Recados do profissional (escritos no admin.html) ---------------------
+  // localStorage[STORAGE_KEY_MESSAGES] = { "p-ivone": { texto, autor, criadoEm, vistoEm } }
+  function lerRecados() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY_MESSAGES)) || {}; }
+    catch (e) { return {}; }
+  }
+  function lerRecado(pacienteId) {
+    const recado = lerRecados()[pacienteId];
+    return recado && recado.texto ? recado : null;
+  }
+  function marcarRecadoVisto(pacienteId) {
+    try {
+      const todos = lerRecados();
+      if (todos[pacienteId] && !todos[pacienteId].vistoEm) {
+        todos[pacienteId].vistoEm = new Date().toISOString();
+        localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify(todos));
+      }
+    } catch (e) { /* sem localStorage: o recado só não é marcado */ }
+  }
+
+  // ---- Pequenas vitórias (presença, nunca ranking) --------------------------
+  // Conta as sessões gravadas desde a última segunda-feira.
+  function contarSessoesDaSemana(pacienteId) {
+    const hoje = new Date();
+    const diasDesdeSegunda = (hoje.getDay() + 6) % 7;
+    const segunda = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - diasDesdeSegunda);
+    try {
+      const todas = JSON.parse(localStorage.getItem(STORAGE_KEY_SESSIONS)) || [];
+      return todas.filter((s) => s.pacienteId === pacienteId && new Date(s.inicio) >= segunda).length;
+    } catch (e) { return 0; }
+  }
+
+  // noFim = true na tela de encerramento (lá não faz sentido "ótimo dia para começar").
+  function mostrarVitoria(caixa, alvo, noFim) {
+    let texto = null;
+    if (jogadorAtual && jogadorAtual.cadastrado) {
+      const n = contarSessoesDaSemana(jogadorAtual.pacienteId);
+      if (n === 0) texto = noFim ? null : TEXTS.vitoriaPrimeira;
+      else texto = n === 1 ? TEXTS.vitoriaUma : preencher(TEXTS.vitoriaVarias, { n });
+    }
+    caixa.hidden = !texto;
+    if (texto) alvo.textContent = texto;
+  }
+
+  // ---- Tela de encerramento -------------------------------------------------
+  function mostrarFim() {
+    const n = estado.pontos;
+    const resultado = n === 0 ? TEXTS.fimSemCapturas
+      : n === 1 ? TEXTS.fimUmaCaptura
+      : preencher(TEXTS.fimVariasCapturas, { n });
+    $('fim-resultado').textContent = resultado;
+    mostrarVitoria($('fim-vitoria'), $('fim-vitoria-texto'), true);
+    mostrarTela('tela-fim');
+    anunciar(`${TEXTS.fimTitulo} ${resultado}`);
+  }
+
+  // "Terminar por hoje": esquece quem estava jogando e volta à primeira tela.
+  function terminarPorHoje() {
+    jogadorAtual = null;
+    pacienteAtual = null;
+    bemEstarAtual = null;
+    $('campo-nome').value = '';
+    atualizarBotaoContinuar();
+    $('botao-comecar').disabled = true;
+    mostrarTela('tela-paciente');
+  }
+
+  /* ==========================================================================
+     [ACOLHER] SOM E VOZ
+     • "Som ligado / desligado" vale para tudo: efeitos do jogo e voz.
+     • A voz usa a Web Speech API, que já vem no navegador (não baixa nada).
+       Se o navegador não tiver voz, os botões "Ouvir" simplesmente somem.
+     ========================================================================== */
+  const podeFalar = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window;
+
+  function lerPreferenciaDeSom() {
+    try { return localStorage.getItem(STORAGE_KEY_SOUND) !== '0'; }
+    catch (e) { return true; }
+  }
+
+  function definirSom(ligado) {
+    somLigado = ligado;
+    try { localStorage.setItem(STORAGE_KEY_SOUND, ligado ? '1' : '0'); } catch (e) { /* só não lembra */ }
+    if (!ligado) pararFala();
+    $('botao-som').setAttribute('aria-pressed', String(ligado));
+    $('botao-som').classList.toggle('desligado', !ligado);
+    $('botao-som-texto').textContent = ligado ? 'Som ligado' : 'Som desligado';
+  }
+
+  function falar(texto) {
+    if (!podeFalar) return;
+    speechSynthesis.cancel();
+    if (!somLigado) definirSom(true);              // pediu para ouvir: liga o som
+    const fala = new SpeechSynthesisUtterance(texto);
+    fala.lang = 'pt-BR';
+    fala.rate = SPEECH_RATE;
+    // Prefere uma voz brasileira; se não houver, o navegador escolhe.
+    const vozes = speechSynthesis.getVoices();
+    const voz = vozes.find((v) => /^pt[-_]BR/i.test(v.lang)) || vozes.find((v) => /^pt/i.test(v.lang));
+    if (voz) fala.voice = voz;
+    fala.onend = fala.onerror = () => marcarFalando(false);
+    marcarFalando(true);
+    speechSynthesis.speak(fala);
+  }
+
+  function pararFala() {
+    if (podeFalar) speechSynthesis.cancel();
+    marcarFalando(false);
+  }
+
+  function marcarFalando(sim) {
+    falando = sim;
+    $('botao-ouvir-texto').textContent = sim ? 'Parar o áudio' : 'Ouvir instruções';
+  }
+
+  // O que a voz lê em cada tela.
+  function textoDaPergunta() {
+    const partes = [$('saudacao-titulo').textContent, TEXTS.saudacaoComplemento];
+    if (!$('recado').hidden) partes.push($('recado-de').textContent, $('recado-texto').textContent);
+    partes.push(TEXTS.perguntaBemEstar, 'As respostas são:');
+    for (const opcao of WELLBEING_OPTIONS) partes.push(opcao.texto + '.');
+    return partes.join(' ');
+  }
+  // "Ouvir instruções" lê em voz alta o MESMO texto do cartão "Como funciona":
+  // ler e ouvir são dois caminhos para a mesma instrução.
+  function textoDasInstrucoes() {
+    return [
+      TEXTS.convite,
+      'Fique de frente para a câmera.',
+      ...[...$('instrucoes-frases').children].map((p) => p.textContent),
+      $('aviso-ritmo').textContent,
+    ].join(' ');
+  }
+
+  // [LER] Monta o cartão "Como funciona" a partir da constante INSTRUCOES_ESCRITAS.
+  function montarInstrucoesEscritas() {
+    $('instrucoes-titulo').textContent = INSTRUCOES_ESCRITAS.titulo;
+    const caixa = $('instrucoes-frases');
+    caixa.replaceChildren();
+    for (const frase of INSTRUCOES_ESCRITAS.frases) {
+      const p = document.createElement('p');
+      p.textContent = preencher(frase, { segundos: textoSegundos() });
+      caixa.append(p);
+    }
+  }
+
+  /* ==========================================================================
+     [AO VIVO] SESSÃO AO VIVO — avisa o painel de quem está jogando AGORA
+
+     COMO FUNCIONA
+       1. Ao começar a atividade, o jogo grava um registro em
+          localStorage[ACTIVE_SESSION_KEY]:
+            {
+              "sessionId": "v_mgk3x1_a8f2",   // identifica esta aba/sessão
+              "playerName": "Yasmin B",
+              "startedAt": 1728492000000,     // quando começou (ms)
+              "lastSeen": 1728492002000,      // último batimento (ms)
+              "captures": 3,
+              "isRegisteredPatient": false,
+              "patientId": null,              // id do paciente, se for cadastrado
+              "wellbeing": "bem",             // resposta de bem-estar (ou null)
+              "level": 3                      // nível de dificuldade de agora
+            }
+       2. A cada HEARTBEAT_INTERVAL_MS o jogo atualiza "lastSeen" (batimento):
+          é o "ainda estou aqui". Se a aba fechar de repente, os batimentos
+          param, e o painel apaga a sessão depois de SESSION_TIMEOUT_MS.
+       3. Ao encerrar (botão "Encerrar sessão" ou aba fechada), o jogo apaga
+          o registro na hora.
+
+     DUAS ABAS DO JOGO AO MESMO TEMPO: vale uma sessão ao vivo por vez, a mais
+     recente. A aba mais antiga para de escrever enquanto a outra estiver
+     viva, e volta a aparecer quando a outra terminar.
+     ========================================================================== */
+  function lerSessaoAtiva() {
+    try { return JSON.parse(localStorage.getItem(ACTIVE_SESSION_KEY)); }
+    catch (e) { return null; }
+  }
+
+  /* --------------------------------------------------------------------------
+     publishLiveSession — publica (ou apaga, com null) a sessão ao vivo.
+     O painel fica sabendo por TRÊS caminhos, do mais rápido ao mais garantido:
+       1. BroadcastChannel: aviso instantâneo para as outras abas do site.
+       2. Evento "storage": o navegador avisa as outras abas sempre que o
+          localStorage muda (funciona onde não há BroadcastChannel).
+       3. Consulta periódica: o painel relê o localStorage a cada 2 s, o que
+          cobre qualquer aviso perdido.
+     O localStorage é sempre a fonte da verdade; 1 e 2 só "acordam" o painel.
+
+     ★ BACKEND FUTURO: para o painel funcionar em OUTRO aparelho, troque o
+     corpo desta função. Exemplos:
+
+       WebSocket próprio:
+         socket.send(JSON.stringify({ tipo: 'aoVivo', sessao }));
+
+       Supabase Realtime (Presence — o próprio servidor percebe quando o
+       jogador cai, e o batimento deixa de ser necessário):
+         const canal = banco.channel('ao-vivo');
+         canal.subscribe(() => canal.track(sessao));   // publicar/atualizar
+         canal.untrack();                               // encerrar
+
+     No admin.html, a função equivalente é subscribeLiveSession().
+     -------------------------------------------------------------------------- */
+  function publishLiveSession(sessao) {
+    try {
+      if (sessao) localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(sessao));
+      else localStorage.removeItem(ACTIVE_SESSION_KEY);
+    } catch (e) {
+      console.warn('Não foi possível publicar a sessão ao vivo.', e);
+    }
+    // Caminho 1: aviso instantâneo. (Os caminhos 2 e 3 acontecem sozinhos.)
+    if (canalAoVivo) canalAoVivo.postMessage({ tipo: sessao ? 'atualizou' : 'encerrou' });
+  }
+
+  function iniciarSessaoAoVivo() {
+    if (!jogadorAtual) return;
+    const agora = Date.now();
+    sessaoAoVivo = {
+      sessionId: 'v_' + agora.toString(36) + '_' + Math.random().toString(36).slice(2, 6),
+      playerName: jogadorAtual.nome,
+      startedAt: agora,
+      lastSeen: agora,
+      captures: 0,
+      isRegisteredPatient: jogadorAtual.cadastrado,
+      patientId: jogadorAtual.pacienteId,
+      wellbeing: bemEstarAtual,      // [ACOLHER] como a pessoa disse que está
+      level: dificuldade.nivel,      // [NÍVEL] nível de agora
+    };
+    publishLiveSession(sessaoAoVivo);          // a mais recente sobrescreve
+    clearInterval(timerBatimento);
+    timerBatimento = setInterval(baterCoracao, HEARTBEAT_INTERVAL_MS);
+  }
+
+  // O batimento: "ainda estou aqui" + número de capturas atualizado.
+  function baterCoracao() {
+    if (!sessaoAoVivo) return;
+    const salva = lerSessaoAtiva();
+    // Outra aba, mais nova e ainda viva, está ao vivo? Então esta não escreve.
+    const outraMaisNova = salva && salva.sessionId !== sessaoAoVivo.sessionId &&
+      salva.startedAt >= sessaoAoVivo.startedAt &&
+      Date.now() - salva.lastSeen <= SESSION_TIMEOUT_MS;
+    if (outraMaisNova) return;
+    sessaoAoVivo.lastSeen = Date.now();
+    sessaoAoVivo.captures = estado.pontos;
+    sessaoAoVivo.level = dificuldade.nivel;        // [NÍVEL]
+    publishLiveSession(sessaoAoVivo);
+  }
+
+  function encerrarSessaoAoVivo() {
+    clearInterval(timerBatimento);
+    if (!sessaoAoVivo) return;
+    // Só apaga se o registro for desta aba (não apaga a sessão de outra).
+    const salva = lerSessaoAtiva();
+    if (!salva || salva.sessionId === sessaoAoVivo.sessionId) publishLiveSession(null);
+    sessaoAoVivo = null;
+  }
+
+  /* ==========================================================================
+     [PAINEL] REGISTRO DA SESSÃO
+     Uma "sessão" começa quando a atividade abre e termina no botão "Parar"
+     (ou quando a aba é fechada). O que é gravado:
+       • quem jogou, quando começou e quando terminou;
+       • tempo de uso (duracaoSeg);
+       • número de capturas;
+       • quanto tempo levou cada captura (temposCaptura), contando só o tempo
+         em que a pessoa estava visível para a câmera.
+     ========================================================================== */
+  function iniciarSessao() {
+    sessaoMs = 0;
+    tentativaMs = 0;
+    ultimoSalvamento = performance.now();
+    if (!pacienteAtual) { sessaoAtual = null; return; }
+    sessaoAtual = {
+      id: 's_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
+      pacienteId: pacienteAtual.id,
+      atividade: ACTIVITY_ID,
+      inicio: new Date().toISOString(),
+      fim: null,
+      duracaoSeg: 0,
+      capturas: 0,
+      temposCaptura: [],       // segundos gastos em cada captura
+      modo: estado.modo,       // 'camera' ou 'mouse'
+      bemEstar: bemEstarAtual, // [ACOLHER] 'bem', 'dor' ou 'dificuldade'
+      // [NÍVEL] Em que nível começou, em que nível terminou e o maior alcançado.
+      nivelInicial: dificuldade.nivelInicial,
+      nivelFinal: dificuldade.nivel,
+      nivelMaximo: dificuldade.nivelMaximo,
+    };
+  }
+
+  // Chamada a cada quadro: soma o tempo de uso e o tempo da captura atual.
+  function contarTempoDaSessao(real, agora) {
+    // (Conta também para visitantes: o sistema de níveis usa estes tempos.)
+    sessaoMs += real;
+    // O relógio da captura só anda com o boneco na tela e a pessoa visível.
+    if (boneco.fase === 'andando' && estado.cursorVisivel) tentativaMs += real;
+    if (sessaoAtual && agora - ultimoSalvamento > SESSION_AUTOSAVE_MS) gravarSessao();
+  }
+
+  function registrarCaptura(tempoDaCaptura) {
+    if (!sessaoAtual) return;
+    sessaoAtual.capturas += 1;
+    sessaoAtual.temposCaptura.push(tempoDaCaptura);
+    gravarSessao();
+  }
+
+  // Atualiza os totais e grava (a mesma sessão é regravada por cima).
+  function gravarSessao() {
+    if (!sessaoAtual) return;
+    ultimoSalvamento = performance.now();
+    sessaoAtual.fim = new Date().toISOString();
+    sessaoAtual.duracaoSeg = Math.round(sessaoMs / 1000);
+    sessaoAtual.nivelFinal = dificuldade.nivel;          // [NÍVEL]
+    sessaoAtual.nivelMaximo = dificuldade.nivelMaximo;   // [NÍVEL]
+    if (sessaoAtual.capturas === 0 && sessaoAtual.duracaoSeg < MIN_SESSION_SECONDS) return;
+    saveSession(sessaoAtual);
+  }
+
+  function encerrarSessao() {
+    gravarSessao();
+    sessaoAtual = null;
+  }
+
+  /* --------------------------------------------------------------------------
+     saveSession — grava UMA sessão.
+     ★ BACKEND FUTURO: esta é a ÚNICA função do jogo que fala com o "banco de
+     dados". Hoje ela usa o localStorage do navegador. Para ligar um backend
+     real, troque só o corpo dela.
+
+     Exemplo com API própria:
+       function saveSession(sessao) {
+         return fetch('https://SEU-SERVIDOR/api/sessoes/' + sessao.id, {
+           method: 'PUT',
+           headers: { 'Content-Type': 'application/json' },
+           body: JSON.stringify(sessao),
+           keepalive: true,   // deixa o envio terminar mesmo se a aba fechar
+         });
+       }
+
+     Exemplo com Supabase (tabela "sessoes", com "id" como chave primária):
+       function saveSession(sessao) {
+         return banco.from('sessoes').upsert(sessao);
+       }
+
+     Exemplo com Firebase (Firestore):
+       function saveSession(sessao) {
+         return setDoc(doc(db, 'sessoes', sessao.id), sessao);
+       }
+
+     No admin.html, as funções equivalentes são fetchPatients() e
+     fetchSessions() (leem os dados).
+     -------------------------------------------------------------------------- */
+  function saveSession(sessao) {
+    try {
+      const todas = JSON.parse(localStorage.getItem(STORAGE_KEY_SESSIONS)) || [];
+      const posicao = todas.findIndex((s) => s.id === sessao.id);
+      if (posicao >= 0) todas[posicao] = sessao;   // já existe: atualiza
+      else todas.push(sessao);                     // nova: acrescenta
+      localStorage.setItem(STORAGE_KEY_SESSIONS, JSON.stringify(todas));
+    } catch (e) {
+      // Sem localStorage (ex.: navegação anônima restrita) o jogo segue normal.
+      console.warn('Não foi possível gravar a sessão.', e);
+    }
+  }
+
+  // A frase grande do topo, conforme o momento.
+  function atualizarInstrucao() {
+    if (!estado.cursorVisivel) {
+      if (estado.modo === 'mouse' || estado.cursorAlvo === null) {
+        // Ainda não viu ninguém desde o começo: instrução calma, sem alerta.
+        definirInstrucao(estado.modo === 'mouse'
+          ? textoLevarMao()
+          : 'Fique de frente para a câmera. Levante as mãos.');
+      } else {
+        definirInstrucao('Não estou vendo você. Fique de frente para a câmera.', true);
+      }
+    } else if (estado.segurando) {
+      definirInstrucao('Isso! Segure aí…');
+    } else {
+      definirInstrucao(textoLevarMao());
+    }
+  }
+
+  /* ==========================================================================
+     DESENHO: área de jogo, boneco, cursor e esqueleto na câmera
+     ========================================================================== */
+
+  // Recalcula as medidas quando a janela muda de tamanho.
+  function ajustarPalco() {
+    const caixa = $('palco-caixa');
+    const L = caixa.clientWidth, A = caixa.clientHeight;
+    if (!L || !A) return;
+    const proporcaoX = palco.largura ? boneco.x / palco.largura : 0.5;
+    const proporcaoY = palco.altura ? boneco.y / palco.altura : 0.5;
+
+    palco.largura = L;
+    palco.altura = A;
+    $('palco').setAttribute('viewBox', `0 0 ${L} ${A}`);
+    palco.alturaBoneco = limitar(Math.min(A * STICK_FIGURE_SIZE, L * 0.2), 100, 260);
+    atualizarRaioDeCaptura(true);   // [NÍVEL] o raio vem do nível atual
+
+    // Mantém o boneco no mesmo lugar relativo, dentro dos novos limites.
+    const lim = limitesBoneco();
+    boneco.x = limitar(proporcaoX * L, lim.xMin, lim.xMax);
+    boneco.y = limitar(proporcaoY * A, lim.yMin, lim.yMax);
+    boneco.alvo = null;
+
+    const canvas = $('efeitos');
+    canvas.width = L; canvas.height = A;
+    desenharCena();
+  }
+
+  // Até onde o CENTRO do boneco pode ir (o desenho inteiro fica na tela).
+  function limitesBoneco() {
+    const meiaAltura = palco.alturaBoneco * 0.52 + 12;
+    const meiaLargura = palco.alturaBoneco * 0.3 + 12;
+    return {
+      xMin: meiaLargura, xMax: Math.max(meiaLargura, palco.largura - meiaLargura),
+      yMin: meiaAltura, yMax: Math.max(meiaAltura, palco.altura - meiaAltura),
+    };
+  }
+
+  function desenharCena() {
+    const escala = palco.alturaBoneco / 200 * boneco.escalaExtra;
+    const parado = reduzirMovimento.matches;
+
+    // Balanço suave de caminhada (sobe e desce um tiquinho).
+    const andando = boneco.fase !== 'comemorando';
+    const ritmo = limitar(boneco.velocidade / Math.max(dificuldade.atual.velocidade, 1), 0, 1);
+    const balanco = parado || !andando ? 0 : Math.abs(Math.sin(boneco.passo)) * 4 * ritmo;
+    const inclinacao = parado || !andando ? 0 : Math.cos(boneco.angulo) * 4 * ritmo;
+    // Na comemoração, um pulinho.
+    const pulo = boneco.fase === 'comemorando' && !parado
+      ? -Math.abs(Math.sin(boneco.tempoFase / 140)) * 14 : 0;
+
+    const g = $('boneco');
+    g.setAttribute('transform',
+      `translate(${boneco.x.toFixed(1)} ${(boneco.y - balanco + pulo).toFixed(1)}) ` +
+      `scale(${escala.toFixed(3)}) rotate(${inclinacao.toFixed(1)})`);
+    g.setAttribute('opacity', boneco.opacidade.toFixed(2));
+
+    // Pernas: abrem e fecham devagar enquanto anda.
+    const amplitude = parado || !andando ? 0 : 12 * ritmo;
+    const abertura = 16 + Math.sin(boneco.passo) * amplitude;   // graus
+    posicionarPerna($('perna-esq'), -abertura);
+    posicionarPerna($('perna-dir'), abertura);
+
+    // Braços: 0 = abaixados balançando, 1 = abertos (abraço), 2 = para cima.
+    const b = boneco.bracos;
+    const anguloBase = b <= 1 ? -40 + b * 40 : (b - 1) * 55;   // graus acima da horizontal
+    const vaiVem = parado || !andando ? 0 : Math.sin(boneco.passo) * 8 * ritmo;
+    posicionarBraco($('braco-esq'), -1, anguloBase + vaiVem);
+    posicionarBraco($('braco-dir'), 1, anguloBase - vaiVem);
+
+    // Área de captura: acompanha o boneco, com o anel de progresso.
+    const area = $('area');
+    area.setAttribute('transform', `translate(${boneco.x.toFixed(1)} ${boneco.y.toFixed(1)})`);
+    area.setAttribute('opacity', boneco.opacidade.toFixed(2));
+    const p = limitar(estado.progresso, 0, 1);
+    const circunferencia = 2 * Math.PI * palco.raioCaptura;
+    $('area-progresso').setAttribute('stroke-dashoffset', (circunferencia * (1 - p)).toFixed(1));
+    $('area-progresso').setAttribute('opacity', p > 0.001 ? 1 : 0);
+    $('area-brilho').setAttribute('opacity', (p > 0.001 ? 0.12 + p * 0.3 : 0).toFixed(2));
+
+    // Cursor virtual.
+    const cursor = $('cursor-mao');
+    cursor.hidden = !estado.cursorVisivel;
+    if (estado.cursorVisivel) {
+      const x = estado.cursor.x * palco.largura, y = estado.cursor.y * palco.altura;
+      cursor.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
+      cursor.classList.toggle('segurando', estado.segurando);
+    }
+  }
+
+  // Perna saindo do quadril (0,28): ângulo em graus a partir da vertical.
+  function posicionarPerna(linha, anguloGraus) {
+    const a = anguloGraus * Math.PI / 180;
+    linha.setAttribute('x2', (Math.sin(a) * 72).toFixed(1));
+    linha.setAttribute('y2', (28 + Math.cos(a) * 72).toFixed(1));
+  }
+
+  // Braço saindo do ombro (0,-30). lado: -1 esquerda, 1 direita.
+  function posicionarBraco(linha, lado, anguloGraus) {
+    const a = anguloGraus * Math.PI / 180;
+    linha.setAttribute('x2', (lado * Math.cos(a) * 50).toFixed(1));
+    linha.setAttribute('y2', (-30 - Math.sin(a) * 50).toFixed(1));
+  }
+
+  // Desenha ombros, braços e punhos sobre o vídeo da câmera.
+  function desenharEsqueleto(pontos) {
+    const canvas = $('esqueleto');
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!pontos) return;
+    const W = canvas.width, H = canvas.height;
+    const p = (i) => ({ x: pontos[i].x * W, y: pontos[i].y * H, ok: visivel(pontos[i]) });
+
+    ctx.lineCap = 'round';
+    ctx.lineWidth = Math.max(6, W / 80);
+    ctx.strokeStyle = 'rgba(255, 255, 255, .9)';
+    const segmentos = [
+      [PONTO.OMBRO_E, PONTO.OMBRO_D],
+      [PONTO.OMBRO_E, PONTO.COTOVELO_E], [PONTO.COTOVELO_E, PONTO.PUNHO_E],
+      [PONTO.OMBRO_D, PONTO.COTOVELO_D], [PONTO.COTOVELO_D, PONTO.PUNHO_D],
+    ];
+    for (const [i, j] of segmentos) {
+      const a = p(i), b = p(j);
+      if (!a.ok || !b.ok) continue;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    // Punhos em branco.
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = '#3B3B3B';
+    for (const indice of [PONTO.PUNHO_E, PONTO.PUNHO_D]) {
+      const w = p(indice);
+      if (!w.ok) continue;
+      ctx.beginPath(); ctx.arc(w.x, w.y, W / 50, 0, Math.PI * 2);
+      ctx.fillStyle = '#FFFFFF'; ctx.fill(); ctx.stroke();
+    }
+    // O ponto que vira cursor, em azul (no ponto médio, fica entre as mãos).
+    const f = estado.fonteCursor;
+    if (f) {
+      ctx.beginPath(); ctx.arc(f.x, f.y, W / 26, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(156, 199, 232, .9)'; ctx.fill();
+      ctx.strokeStyle = '#2A6A9E'; ctx.stroke();
+    }
+  }
+
+  /* ==========================================================================
+     ESTRELINHAS DA COMEMORAÇÃO (espalham devagar e somem)
+     ========================================================================== */
+  function soltarEstrelas(x, y) {
+    // Com "movimento reduzido", sem estrelinhas voando.
+    if (reduzirMovimento.matches) return;
+    const cores = ['#F6C453', '#A8D5BA', '#9CC7E8', '#F4A6A0', '#2E7D57'];   // [ACOLHER] tons suaves da paleta
+    for (let i = 0; i < 28; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const v = 60 + Math.random() * 120;          // px/s
+      particulas.push({
+        x, y,
+        vx: Math.cos(a) * v, vy: Math.sin(a) * v - 40,
+        giro: Math.random() * Math.PI, vgiro: (Math.random() - 0.5) * 3,
+        tam: 9 + Math.random() * 10,
+        cor: cores[i % cores.length],
+        vida: 0, duracao: 1200 + Math.random() * 600,
+      });
+    }
+  }
+
+  function desenharEfeitos(dt) {
+    const canvas = $('efeitos');
+    const ctx = canvas.getContext('2d');
+    if (!particulas.length && !canvas.dataset.sujo) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    canvas.dataset.sujo = particulas.length ? '1' : '';
+    const s = dt / 1000;
+    particulas = particulas.filter((q) => (q.vida += dt) < q.duracao);
+    for (const q of particulas) {
+      q.vx *= 0.985; q.vy = q.vy * 0.985 + 40 * s;  // freia e cai de levinho
+      q.x += q.vx * s; q.y += q.vy * s; q.giro += q.vgiro * s;
+      ctx.save();
+      ctx.globalAlpha = 1 - q.vida / q.duracao;
+      ctx.translate(q.x, q.y);
+      ctx.rotate(q.giro);
+      ctx.fillStyle = q.cor;
+      caminhoEstrela(ctx, q.tam, q.tam * 0.45);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  function caminhoEstrela(ctx, externo, interno) {
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const r = i % 2 === 0 ? externo : interno;
+      const a = -Math.PI / 2 + i * Math.PI / 5;
+      i ? ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r) : ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+    }
+    ctx.closePath();
+  }
+
+  /* ==========================================================================
+     FLUXO PRINCIPAL: Começar → Carregando → Atividade
+     ========================================================================== */
+  async function comecar() {
+    prepararAudio();              // o som precisa ser liberado num clique
+    estado.modo = 'camera';
+    mostrarTela('tela-carregando');
+    marcarStatus('camera', 'carregando', 'Ligando a câmera…');
+    marcarStatus('modelo', poseLandmarker ? 'pronto' : 'carregando',
+                 poseLandmarker ? 'Jogo pronto' : 'Preparando o jogo…');
+
+    // Câmera e modelo carregam ao mesmo tempo (fica mais rápido).
+    // Esperamos os DOIS terminarem, para não deixar a câmera ligada à toa.
+    const [camera, modelo] = await Promise.allSettled([
+      initCamera().then(() => marcarStatus('camera', 'pronto', 'Câmera pronta')),
+      loadPoseModel().then(() => marcarStatus('modelo', 'pronto', 'Jogo pronto')),
+    ]);
+    if (camera.status === 'rejected' || modelo.status === 'rejected') {
+      pararCamera();
+      mostrarErro(camera.status === 'rejected' ? camera.reason : modelo.reason);
+      return;
+    }
+    iniciarAtividade();
+  }
+
+  function iniciarModoMouse() {
+    prepararAudio();
+    pararCamera();
+    estado.modo = 'mouse';
+    iniciarAtividade();
+  }
+
+  function iniciarAtividade() {
+    $('camera-aviso').hidden = estado.modo !== 'mouse';
+    mostrarTela('tela-atividade');
+    ajustarPalco();
+
+    estado.cursorAlvo = null;
+    estado.cursorAceito = null;
+    estado.cursorVisivel = false;
+    estado.corpo = null;
+    estado.ultimaVezVisto = 0;
+    estado.progresso = 0;
+    estado.segurando = false;
+    particulas = [];
+    // [PAINEL] Cada sessão começa do zero: o número da tela é o da sessão.
+    estado.pontos = 0;
+    $('pontos').textContent = '0';
+    iniciarDificuldade();          // [NÍVEL] toda sessão recomeça no nível inicial
+    iniciarSessao();
+    iniciarSessaoAoVivo();         // [AO VIVO] o painel passa a mostrar o nome
+    boneco.x = palco.largura / 2;       // nasce no meio da tela
+    boneco.y = palco.altura / 2;
+    respawnStickFigure();
+    boneco.x = palco.largura / 2;
+    boneco.y = palco.altura / 2;
+    atualizarInstrucao();
+
+    estado.rodando = true;
+    ultimoQuadro = 0;
+    errosSeguidos = 0;
+    cancelAnimationFrame(idLoop);
+    idLoop = requestAnimationFrame(detectLoop);
+  }
+
+  function parar() {
+    encerrarSessao();              // [PAINEL] grava a sessão antes de sair
+    encerrarSessaoAoVivo();        // [AO VIVO] o nome some do painel
+    estado.rodando = false;
+    cancelAnimationFrame(idLoop);
+    pararCamera();
+    clearTimeout(timerMensagem);
+    clearTimeout(timerSaidaMensagem);
+    $('mensagem').hidden = true;
+    mostrarFim();                  // [ACOLHER] "Muito bem! Você cuidou de você hoje."
+  }
+
+  function pararCamera() {
+    if (fluxoCamera) fluxoCamera.getTracks().forEach((t) => t.stop());
+    fluxoCamera = null;
+    video.srcObject = null;
+    const c = $('esqueleto');
+    c.getContext('2d').clearRect(0, 0, c.width, c.height);
+  }
+
+  function marcarStatus(qual, situacao, texto) {
+    $(`status-${qual}-texto`).textContent = texto;
+    $(`status-${qual}-icone`).innerHTML = situacao === 'pronto'
+      ? '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M7 12.5l3.2 3.2L17 9"/></svg>'
+      : '<span class="girando"></span>';
+  }
+
+  // Mensagens de erro amigáveis, conforme o problema.
+  function mostrarErro(e) {
+    console.error(e);
+    let titulo = 'Não conseguimos acessar a câmera.';
+    let detalhe = 'Toque em "Tentar de novo" e depois em "Permitir".';
+    const nome = e && e.erro && e.erro.name;
+
+    if (e && e.tipo === 'inseguro') {
+      titulo = 'Esta página precisa ser aberta de outro jeito.';
+      detalhe = 'O navegador só libera a câmera em endereços "localhost" ou "https". Peça ajuda para abrir por um desses endereços.';
+    } else if (e && e.tipo === 'sem-suporte') {
+      titulo = 'Este navegador não consegue usar a câmera.';
+      detalhe = 'Tente abrir no Google Chrome, Microsoft Edge ou Firefox.';
+    } else if (e && e.tipo === 'modelo') {
+      titulo = 'Não conseguimos preparar o jogo.';
+      detalhe = 'Verifique se a internet está funcionando e toque em "Tentar de novo".';
+    } else if (nome === 'NotAllowedError' || nome === 'SecurityError') {
+      titulo = 'Não conseguimos acessar a câmera.';
+      detalhe = 'Toque em "Tentar de novo" e clique em "Permitir". Se não aparecer a pergunta, clique no cadeado ao lado do endereço do site e libere a câmera.';
+    } else if (nome === 'NotFoundError' || nome === 'OverconstrainedError') {
+      titulo = 'Não encontramos nenhuma câmera.';
+      detalhe = 'Verifique se a câmera está ligada e conectada ao computador.';
+    } else if (nome === 'NotReadableError' || nome === 'AbortError') {
+      titulo = 'A câmera está ocupada.';
+      detalhe = 'Feche outros programas que usam a câmera (como chamadas de vídeo) e toque em "Tentar de novo".';
+    }
+    $('erro-titulo').textContent = titulo;
+    $('erro-detalhe').textContent = detalhe;
+    mostrarTela('tela-erro');
+    anunciar(`${titulo} ${detalhe}`);
+  }
+
+  /* ==========================================================================
+     PEQUENAS FUNÇÕES DE APOIO
+     ========================================================================== */
+  function limitar(v, min, max) { return Math.min(max, Math.max(min, v)); }
+  function aleatorio(min, max) { return min + Math.random() * Math.max(0, max - min); }
+  // Transforma um "tempo de suavização" em fração de lerp, independente do FPS.
+  function suavizar(dt, tempoMs) { return 1 - Math.exp(-dt / tempoMs); }
+
+  /* ==========================================================================
+     LIGANDO OS BOTÕES E EVENTOS
+     ========================================================================== */
+  $('botao-comecar').addEventListener('click', comecar);
+  $('botao-tentar').addEventListener('click', comecar);
+  $('botao-mouse').addEventListener('click', iniciarModoMouse);
+  $('botao-parar').addEventListener('click', parar);
+
+  // Modo mouse (para testar sem câmera, ou para um cuidador demonstrar).
+  $('palco-caixa').addEventListener('pointermove', (ev) => {
+    if (estado.modo !== 'mouse' || !estado.rodando) return;
+    const r = $('palco-caixa').getBoundingClientRect();
+    estado.cursorAlvo = {
+      x: limitar((ev.clientX - r.left) / r.width, 0, 1),
+      y: limitar((ev.clientY - r.top) / r.height, 0, 1),
+    };
+  });
+
+  // Recalcula o palco se a janela mudar de tamanho.
+  new ResizeObserver(() => { if (!$('tela-atividade').hidden) ajustarPalco(); })
+    .observe($('palco-caixa'));
+
+  // Textos da tela inicial seguem as configurações lá do topo.
+  $('passo-maos').textContent = textoLevarMao();
+  $('passo-segurar').textContent = `Segure por ${textoSegundos()}.`;
+
+  // [ACOLHER] Textos, bem-estar, som e voz.
+  aplicarTextos();
+  montarInstrucoesEscritas();    // [LER] cartão "Como funciona"
+  montarBemEstar();
+  definirSom(lerPreferenciaDeSom());
+  $('botao-som').addEventListener('click', () => definirSom(!somLigado));
+  $('botao-ouvir').addEventListener('click', () => { if (falando) pararFala(); else falar(textoDasInstrucoes()); });
+  $('botao-ouvir-pergunta').addEventListener('click', () => falar(textoDaPergunta()));
+  if (!podeFalar) { $('botao-ouvir').hidden = true; $('botao-ouvir-pergunta').hidden = true; }
+  // Tela de encerramento: jogar de novo (do mesmo jeito de antes) ou terminar.
+  $('botao-de-novo').addEventListener('click', () => { if (estado.modo === 'mouse') iniciarModoMouse(); else comecar(); });
+  $('botao-terminar').addEventListener('click', terminarPorHoje);
+
+  // [PAINEL] Escolha de paciente e gravação ao sair.
+  montarTelaPaciente();
+  $('botao-trocar').addEventListener('click', () => mostrarTela('tela-paciente'));
+  // Se a aba for fechada ou escondida no meio do jogo, grava o que já foi feito.
+  window.addEventListener('pagehide', gravarSessao);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) gravarSessao(); });
+
+  // [AO VIVO] Campo do nome: liga o botão ao digitar; Enter ou "Continuar" seguem.
+  $('campo-nome').addEventListener('input', atualizarBotaoContinuar);
+  $('form-nome').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    definirJogador($('campo-nome').value);
+  });
+  // [AO VIVO] Aba fechada ou recarregada: apaga a sessão ao vivo na hora.
+  // (Se o navegador travar e isto não rodar, o painel percebe pela falta de
+  // batimentos e limpa sozinho depois de SESSION_TIMEOUT_MS.)
+  window.addEventListener('beforeunload', encerrarSessaoAoVivo);
+  window.addEventListener('pagehide', encerrarSessaoAoVivo);
+
+  // Foco inicial no título, para leitores de tela.
+  $('paciente-titulo').focus({ preventScroll: true });
+  </script>
+</body>
+</html>
